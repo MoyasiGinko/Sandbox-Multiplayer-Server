@@ -1,0 +1,51 @@
+{
+  "name": "backend-game-server",
+  "version": "1.0.0",
+  "description": "A backend game server for Tinybox, implementing ENet and WebSocket protocols.",
+  "main": "src/server.ts",
+  "scripts": {
+    "prestart": "node scripts/ensure-port-free.js",
+    "start": "ts-node src/server.ts",
+    "build": "tsc",
+    "test": "jest",
+    "lint": "echo \"No linter configured yet\""
+  },
+  "dependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/jsonwebtoken": "^9.0.10",
+    "bcrypt": "^6.0.0",
+    "better-sqlite3": "^12.5.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-validator": "^7.3.1",
+    "jsonwebtoken": "^9.0.3",
+    "nanoid": "^3.3.11",
+    "winston": "^3.10.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jest": "^27.0.2",
+    "@types/node": "^16.11.7",
+    "@types/winston": "^2.4.4",
+    "@types/ws": "^8.5.10",
+    "jest": "^27.0.6",
+    "ts-jest": "^29.4.6",
+    "ts-node": "^10.4.0",
+    "typescript": "^4.4.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/backend-game-server.git"
+  },
+  "keywords": [
+    "game",
+    "server",
+    "backend",
+    "nodejs",
+    "typescript"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
