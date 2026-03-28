@@ -31,11 +31,27 @@ export function runMigrations(): void {
       `);
   }
 
+  const hasAuthSource = columns.some((col: any) => col.name === "auth_source");
+  if (!hasAuthSource) {
+    db.exec(`
+          ALTER TABLE users
+          ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'
+      `);
+  }
+
   // Backfill missing display names to match username
   db.exec(`
         UPDATE users
         SET display_name = username
         WHERE display_name IS NULL OR display_name = ''
+    `);
+
+  // Mark Django-projected identities so local credential rows can be audited/cleaned safely later.
+  db.exec(`
+        UPDATE users
+        SET auth_source = 'external'
+        WHERE password_hash = 'external_auth'
+           OR email LIKE 'django_user_%@local.invalid'
     `);
 
   // Player stats table
@@ -149,6 +165,7 @@ export function runMigrations(): void {
         CREATE INDEX IF NOT EXISTS idx_rooms_is_public ON rooms(is_public);
         CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
         CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+        CREATE INDEX IF NOT EXISTS idx_users_auth_source ON users(auth_source);
         CREATE INDEX IF NOT EXISTS idx_worlds_featured ON worlds(featured);
         CREATE INDEX IF NOT EXISTS idx_worlds_author ON worlds(author);
         CREATE INDEX IF NOT EXISTS idx_worlds_downloads ON worlds(downloads);

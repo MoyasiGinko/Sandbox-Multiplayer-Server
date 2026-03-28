@@ -5,6 +5,7 @@ export interface User {
   username: string;
   email: string;
   password_hash: string;
+  auth_source: string;
   display_name: string | null;
   created_at: string;
   last_login: string | null;
@@ -49,6 +50,7 @@ export class UserRepository {
         UPDATE users
         SET username = ?,
             display_name = ?,
+            auth_source = 'external',
             is_active = 1
         WHERE id = ?
       `);
@@ -60,6 +62,7 @@ export class UserRepository {
         const fallbackStmt = this.db.prepare(`
           UPDATE users
           SET display_name = ?,
+              auth_source = 'external',
               is_active = 1
           WHERE id = ?
         `);
@@ -84,8 +87,8 @@ export class UserRepository {
     const syntheticPasswordHash = "external_auth";
 
     const insertStmt = this.db.prepare(`
-      INSERT INTO users (id, username, email, password_hash, display_name, is_active)
-      VALUES (?, ?, ?, ?, ?, 1)
+      INSERT INTO users (id, username, email, password_hash, auth_source, display_name, is_active)
+      VALUES (?, ?, ?, ?, 'external', ?, 1)
     `);
 
     insertStmt.run(
@@ -101,8 +104,8 @@ export class UserRepository {
 
   createUser(input: CreateUserInput): User {
     const stmt = this.db.prepare(`
-            INSERT INTO users (username, email, password_hash, display_name)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (username, email, password_hash, auth_source, display_name)
+            VALUES (?, ?, ?, 'local', ?)
         `);
 
     const result = stmt.run(
