@@ -109,8 +109,8 @@ server.listen(config.port, () => {
   console.log(`  - GET  /api/auth/verify`);
   console.log(`  - GET  /api/rooms (Server List)`);
   console.log(`  - GET  /api/rooms/:id`);
-  console.log(`  - GET  /api/users (All Users)`);
-  console.log(`  - GET  /api/users/online (Online Users)`);
+  console.log(`  - GET  /api/users (Deprecated: use Django)`);
+  console.log(`  - GET  /api/users/online (Deprecated: use Django)`);
   console.log(`  - GET  /api/users/:id/stats`);
   console.log(`  - GET  /api/leaderboard`);
 
