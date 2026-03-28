@@ -2,10 +2,11 @@
   "name": "backend-game-server",
   "version": "1.0.0",
   "description": "A backend game server for Tinybox, implementing ENet and WebSocket protocols.",
-  "main": "src/server.ts",
+  "main": "dist/server.js",
   "scripts": {
     "prestart": "node scripts/ensure-port-free.js",
-    "start": "ts-node src/server.ts",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
     "build": "tsc",
     "test": "jest",
     "lint": "echo \"No linter configured yet\""

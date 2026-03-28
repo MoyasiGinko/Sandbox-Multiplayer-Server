@@ -4,18 +4,37 @@ import fs from "fs";
 
 let db: Database.Database | null = null;
 
+function resolveDbPath(): string {
+  const configured = (
+    process.env.SQLITE_DB_PATH || "database/tinybox.db"
+  ).trim();
+  const fallback = (
+    process.env.SQLITE_DB_FALLBACK_PATH || "/tmp/tinybox.db"
+  ).trim();
+
+  const preferred = path.isAbsolute(configured)
+    ? configured
+    : path.resolve(process.cwd(), configured);
+
+  try {
+    fs.mkdirSync(path.dirname(preferred), { recursive: true });
+    fs.accessSync(path.dirname(preferred), fs.constants.W_OK);
+    return preferred;
+  } catch {
+    const safeFallback = path.isAbsolute(fallback)
+      ? fallback
+      : path.resolve(process.cwd(), fallback);
+    fs.mkdirSync(path.dirname(safeFallback), { recursive: true });
+    return safeFallback;
+  }
+}
+
 export function getDatabase(): Database.Database {
   if (db) {
     return db;
   }
 
-  // Create database directory if it doesn't exist
-  const dbDir = path.join(__dirname, "../../database");
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
-
-  const dbPath = path.join(dbDir, "tinybox.db");
+  const dbPath = resolveDbPath();
   db = new Database(dbPath, { verbose: console.log });
 
   // Enable foreign keys
