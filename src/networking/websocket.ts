@@ -105,7 +105,19 @@ function validateSessionIdentity(
     };
   }
 
-  const dbUser = userRepo.getUserById(session.userId);
+  let dbUser = userRepo.getUserById(session.userId);
+  if (!dbUser || !dbUser.is_active) {
+    try {
+      dbUser = userRepo.ensureExternalUser(
+        session.userId,
+        session.username,
+        session.name,
+      );
+    } catch {
+      dbUser = null;
+    }
+  }
+
   if (!dbUser || !dbUser.is_active) {
     return {
       ok: false,
@@ -114,9 +126,8 @@ function validateSessionIdentity(
     };
   }
 
-  const dbUsername = dbUser.username.trim();
-  const tokenUsername = session.username.trim();
-  if (dbUsername.length === 0 || tokenUsername.length === 0) {
+  const canonicalUsername = dbUser.username.trim();
+  if (canonicalUsername.length === 0) {
     return {
       ok: false,
       reason: "invalid_user_profile",
@@ -124,23 +135,20 @@ function validateSessionIdentity(
     };
   }
 
-  if (dbUsername !== tokenUsername) {
-    return {
-      ok: false,
-      reason: "identity_mismatch",
-      message: "Account identity mismatch detected. Please log in again.",
-    };
-  }
+  // Keep the active websocket session aligned with canonical user projection.
+  session.username = canonicalUsername;
 
   const displayName =
     dbUser.display_name && dbUser.display_name.trim().length > 0
       ? dbUser.display_name.trim()
-      : dbUsername;
+      : canonicalUsername;
+
+  session.name = displayName;
 
   return {
     ok: true,
     userId: dbUser.id,
-    username: dbUsername,
+    username: canonicalUsername,
     displayName,
   };
 }
@@ -295,18 +303,6 @@ export function setupWebSocket(server: http.Server) {
                 return send(ws, "error", {
                   reason: "invalid_user_profile",
                   message: "Unable to load authenticated user profile",
-                });
-              }
-
-              // Reject any drift between token username and canonical DB profile for this user id.
-              if (syncedUser.username.trim() !== user.username.trim()) {
-                logError(
-                  `identity mismatch on handshake for userId=${user.userId}: tokenUsername=${user.username} dbUsername=${syncedUser.username}`,
-                );
-                return send(ws, "error", {
-                  reason: "identity_mismatch",
-                  message:
-                    "Account identity mismatch detected. Please log in again.",
                 });
               }
 
