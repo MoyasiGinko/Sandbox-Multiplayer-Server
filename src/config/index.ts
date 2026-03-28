@@ -6,6 +6,8 @@ const PORT = Number(process.env.PORT || 30820);
 const ENVIRONMENT = process.env.NODE_ENV || "development";
 const DJANGO_REGISTRY_BASE_URL =
   process.env.DJANGO_REGISTRY_BASE_URL || "http://127.0.0.1:8000/api";
+const DJANGO_API_BASE_URL =
+  process.env.DJANGO_API_BASE_URL || DJANGO_REGISTRY_BASE_URL;
 const JWT_SECRET = process.env.JWT_SECRET || "change-me-in-env-for-production";
 const GAME_SERVER_ID = process.env.GAME_SERVER_ID || `node-${PORT.toString()}`;
 const GAME_SERVER_NAME = process.env.GAME_SERVER_NAME || `Node Server ${PORT}`;
@@ -22,6 +24,7 @@ export const config = {
   port: PORT,
   env: ENVIRONMENT,
   djangoRegistryBaseUrl: DJANGO_REGISTRY_BASE_URL,
+  djangoApiBaseUrl: DJANGO_API_BASE_URL,
   jwtSecret: JWT_SECRET,
   gameServerId: GAME_SERVER_ID,
   gameServerName: GAME_SERVER_NAME,

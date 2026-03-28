@@ -1,9 +1,13 @@
 import { WebSocketServer, WebSocket, RawData } from "ws";
 import http from "http";
-import { logInfo, logError } from "../utils/logger";
+import { logInfo, logError, logWarning } from "../utils/logger";
 import { RoomManager, GameRoom } from "../game/roomManager";
 import { verifyToken } from "../auth/jwt";
 import { RoomRepository } from "../database/repositories/roomRepository";
+import {
+  reportMatchToDjango,
+  MatchPlayerReport,
+} from "../integration/djangoMatchReporter";
 
 type Message = { type: string; data?: unknown };
 
@@ -17,6 +21,7 @@ type ClientSession = {
   ip: string;
   userId: number | null; // Added for authenticated users
   isAuthenticated: boolean; // Track if user is authenticated
+  accessToken: string | null;
 };
 
 const roomManager = new RoomManager();
@@ -236,6 +241,7 @@ export function setupWebSocket(server: http.Server) {
       ip,
       userId: null,
       isAuthenticated: false,
+      accessToken: null,
     };
     clientSessions.set(ws, session);
     logInfo(`ws: client connected from ${ip}`);
@@ -264,6 +270,7 @@ export function setupWebSocket(server: http.Server) {
             if (user) {
               session.userId = user.userId;
               session.isAuthenticated = true;
+              session.accessToken = token;
               session.username = user.username;
               session.name =
                 user.display_name && user.display_name.trim().length > 0
@@ -822,6 +829,139 @@ export function setupWebSocket(server: http.Server) {
 
         case "ping": {
           send(ws, "pong", { ts: Date.now() });
+          break;
+        }
+
+        case "match_result": {
+          const identity = validateSessionIdentity(session);
+          if (!identity.ok || !session.accessToken) {
+            return send(ws, "error", {
+              reason: "authentication_required",
+              message:
+                "Authenticated host session required for match reporting",
+            });
+          }
+
+          if (!session.roomId || session.peerId === null) {
+            return send(ws, "error", { reason: "not_in_room" });
+          }
+
+          const room = roomManager.getRoom(session.roomId);
+          if (!room) {
+            return send(ws, "error", { reason: "room_not_found" });
+          }
+
+          if (!room.clients.get(session.peerId)?.isHost) {
+            return send(ws, "error", {
+              reason: "not_host",
+              message: "Only room host can submit match results",
+            });
+          }
+
+          const payload = (msg.data as any) || {};
+          const gamemode =
+            typeof payload.gamemode === "string" &&
+            payload.gamemode.trim().length > 0
+              ? payload.gamemode.trim()
+              : "unknown";
+
+          const winnerRaw = payload.winner_user_id ?? payload.winnerUserId;
+          const winnerUserId =
+            typeof winnerRaw === "number"
+              ? winnerRaw
+              : typeof winnerRaw === "string"
+                ? Number.parseInt(winnerRaw, 10)
+                : null;
+
+          const durationRaw =
+            payload.duration_seconds ?? payload.durationSeconds;
+          const durationSeconds =
+            typeof durationRaw === "number"
+              ? Math.max(0, Math.floor(durationRaw))
+              : typeof durationRaw === "string"
+                ? Math.max(0, Number.parseInt(durationRaw, 10) || 0)
+                : 0;
+
+          const sourcePlayers = Array.isArray(payload.players)
+            ? payload.players
+            : [];
+          const players: MatchPlayerReport[] = sourcePlayers
+            .map((entry: any) => {
+              const userIdRaw = entry?.user_id ?? entry?.userId;
+              const parsedUserId =
+                typeof userIdRaw === "number"
+                  ? userIdRaw
+                  : typeof userIdRaw === "string"
+                    ? Number.parseInt(userIdRaw, 10)
+                    : NaN;
+
+              if (!Number.isInteger(parsedUserId) || parsedUserId <= 0) {
+                return null;
+              }
+
+              const kills = Number.parseInt(String(entry?.kills ?? 0), 10) || 0;
+              const deaths =
+                Number.parseInt(String(entry?.deaths ?? 0), 10) || 0;
+              const playtimeSeconds =
+                Number.parseInt(
+                  String(
+                    entry?.playtime_seconds ?? entry?.playtimeSeconds ?? 0,
+                  ),
+                  10,
+                ) || 0;
+
+              return {
+                user_id: parsedUserId,
+                kills: Math.max(0, kills),
+                deaths: Math.max(0, deaths),
+                playtime_seconds: Math.max(0, playtimeSeconds),
+                won: Boolean(entry?.won),
+              } satisfies MatchPlayerReport;
+            })
+            .filter(
+              (entry: MatchPlayerReport | null): entry is MatchPlayerReport =>
+                entry !== null,
+            );
+
+          if (players.length === 0) {
+            return send(ws, "error", {
+              reason: "invalid_match_result",
+              message: "players array must include at least one valid user_id",
+            });
+          }
+
+          reportMatchToDjango(session.accessToken, {
+            room_id: session.roomId,
+            gamemode,
+            winner_user_id:
+              winnerUserId && Number.isInteger(winnerUserId) && winnerUserId > 0
+                ? winnerUserId
+                : null,
+            duration_seconds: durationSeconds,
+            players,
+          })
+            .then((result) => {
+              send(ws, "match_result_saved", {
+                roomId: session.roomId,
+                matchId: result.match_id ?? null,
+                processedPlayers: result.processed_players ?? players.length,
+              });
+              logInfo(
+                `match_result persisted: roomId=${session.roomId} matchId=${result.match_id ?? "n/a"} players=${players.length}`,
+              );
+            })
+            .catch((err: unknown) => {
+              const errorMessage =
+                err instanceof Error ? err.message : String(err);
+              logWarning(
+                `match_result persistence failed for roomId=${session.roomId}: ${errorMessage}`,
+              );
+              send(ws, "match_result_error", {
+                roomId: session.roomId,
+                message: "Failed to persist match result",
+              });
+            });
+
           break;
         }
 

@@ -112,7 +112,7 @@ server.listen(config.port, () => {
   console.log(`  - GET  /api/users (Deprecated: use Django)`);
   console.log(`  - GET  /api/users/online (Deprecated: use Django)`);
   console.log(`  - GET  /api/users/:id/stats (Deprecated: use Django)`);
-  console.log(`  - GET  /api/leaderboard`);
+  console.log(`  - GET  /api/leaderboard (Deprecated: use Django)`);
 
   const initial = collectRegistryStats();
   registerGameServer(initial.currentPlayers, initial.maxPlayers)
