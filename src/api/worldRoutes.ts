@@ -1,9 +1,16 @@
 import { Router, Request, Response } from "express";
 import { WorldRepository } from "../database/repositories/worldRepository";
-import { authenticateToken, AuthRequest } from "../auth/middleware";
 
 const router = Router();
 const worldRepo = new WorldRepository();
+
+function deprecatedWorldWriteResponse(res: Response): void {
+  res.status(410).json({
+    error: "deprecated_endpoint",
+    message:
+      "Node world write endpoints are disabled. Use Django world endpoints for create/update/delete/download/report.",
+  });
+}
 
 // Get all worlds (optional: filter by featured)
 router.get("/", async (req: Request, res: Response) => {
@@ -12,8 +19,8 @@ router.get("/", async (req: Request, res: Response) => {
       req.query.featured === "true"
         ? true
         : req.query.featured === "false"
-        ? false
-        : undefined;
+          ? false
+          : undefined;
 
     const worlds = worldRepo.getAllWorlds(featured);
     res.json({ success: true, worlds });
@@ -65,168 +72,28 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-// Create new world (requires authentication)
-router.post("/", authenticateToken, (req: AuthRequest, res: Response) => {
-  try {
-    const { name, featured, version, author, image, tbw } = req.body;
-
-    // Validate required fields
-    if (!name || !version || !author || !image || !tbw) {
-      res.status(400).json({
-        error: "Missing required fields: name, version, author, image, tbw",
-      });
-      return;
-    }
-
-    // Use authenticated user as author if not provided
-    const worldAuthor = author || req.user?.username;
-
-    const world = worldRepo.createWorld({
-      name,
-      featured: featured || false,
-      version,
-      author: worldAuthor,
-      image,
-      tbw,
-    });
-
-    console.log(`[WorldAPI] Created world: ${world.name} by ${world.author}`);
-    res.status(201).json({ success: true, world });
-  } catch (error) {
-    console.error("[WorldAPI] Error creating world:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+// Create new world endpoint is intentionally disabled.
+router.post("/", (_req: Request, res: Response) => {
+  deprecatedWorldWriteResponse(res);
 });
 
-// Update world (requires authentication)
-router.put("/:id", authenticateToken, (req: AuthRequest, res: Response) => {
-  try {
-    const worldId = parseInt(req.params.id, 10);
-
-    if (isNaN(worldId)) {
-      res.status(400).json({ error: "Invalid world ID" });
-      return;
-    }
-
-    const existingWorld = worldRepo.getWorldById(worldId);
-
-    if (!existingWorld) {
-      res.status(404).json({ error: "World not found" });
-      return;
-    }
-
-    // Optional: Check if user is author or admin
-    // if (existingWorld.author !== req.user?.username) {
-    //   return res.status(403).json({ error: "Not authorized to update this world" });
-    // }
-
-    const { name, featured, version, author, image, tbw } = req.body;
-
-    const updatedWorld = worldRepo.updateWorld(worldId, {
-      name,
-      featured,
-      version,
-      author,
-      image,
-      tbw,
-    });
-
-    console.log(`[WorldAPI] Updated world: ${worldId}`);
-    res.json({ success: true, world: updatedWorld });
-  } catch (error) {
-    console.error("[WorldAPI] Error updating world:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+// Update world endpoint is intentionally disabled.
+router.put("/:id", (_req: Request, res: Response) => {
+  deprecatedWorldWriteResponse(res);
 });
 
-// Delete world (requires authentication)
-router.delete("/:id", authenticateToken, (req: AuthRequest, res: Response) => {
-  try {
-    const worldId = parseInt(req.params.id, 10);
-
-    if (isNaN(worldId)) {
-      res.status(400).json({ error: "Invalid world ID" });
-      return;
-    }
-
-    const existingWorld = worldRepo.getWorldById(worldId);
-
-    if (!existingWorld) {
-      res.status(404).json({ error: "World not found" });
-      return;
-    }
-
-    // Optional: Check if user is author or admin
-    // if (existingWorld.author !== req.user?.username) {
-    //   return res.status(403).json({ error: "Not authorized to delete this world" });
-    // }
-
-    const deleted = worldRepo.deleteWorld(worldId);
-
-    if (deleted) {
-      console.log(`[WorldAPI] Deleted world: ${worldId}`);
-      res.json({ success: true, message: "World deleted successfully" });
-    } else {
-      res.status(500).json({ error: "Failed to delete world" });
-    }
-  } catch (error) {
-    console.error("[WorldAPI] Error deleting world:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+// Delete world endpoint is intentionally disabled.
+router.delete("/:id", (_req: Request, res: Response) => {
+  deprecatedWorldWriteResponse(res);
 });
 
-// Increment download count
-router.post("/:id/download", async (req: Request, res: Response) => {
-  try {
-    const worldId = parseInt(req.params.id, 10);
-
-    if (isNaN(worldId)) {
-      res.status(400).json({ error: "Invalid world ID" });
-      return;
-    }
-
-    const world = worldRepo.getWorldById(worldId);
-
-    if (!world) {
-      res.status(404).json({ error: "World not found" });
-      return;
-    }
-
-    worldRepo.incrementDownloads(worldId);
-    const updatedWorld = worldRepo.getWorldById(worldId);
-
-    res.json({ success: true, world: updatedWorld });
-  } catch (error) {
-    console.error("[WorldAPI] Error incrementing downloads:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+// Download/report mutations are disabled to avoid data drift from Django authority.
+router.post("/:id/download", (_req: Request, res: Response) => {
+  deprecatedWorldWriteResponse(res);
 });
 
-// Report world
-router.post("/:id/report", async (req: Request, res: Response) => {
-  try {
-    const worldId = parseInt(req.params.id, 10);
-
-    if (isNaN(worldId)) {
-      res.status(400).json({ error: "Invalid world ID" });
-      return;
-    }
-
-    const world = worldRepo.getWorldById(worldId);
-
-    if (!world) {
-      res.status(404).json({ error: "World not found" });
-      return;
-    }
-
-    worldRepo.incrementReports(worldId);
-    console.log(`[WorldAPI] World ${worldId} reported`);
-
-    res.json({ success: true, message: "Report submitted successfully" });
-  } catch (error) {
-    console.error("[WorldAPI] Error reporting world:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+router.post("/:id/report", (_req: Request, res: Response) => {
+  deprecatedWorldWriteResponse(res);
 });
 
 export default router;

@@ -52,21 +52,6 @@ router.post("/", authenticateToken, (req: AuthRequest, res: Response) => {
       return;
     }
 
-    if (dbUser.username.trim() !== username.trim()) {
-      console.log(
-        "[RoomAPI] ❌ Validation failed: identity mismatch userId=",
-        userId,
-        " tokenUsername=",
-        username,
-        " dbUsername=",
-        dbUser.username,
-      );
-      res.status(403).json({
-        error: "Account identity mismatch detected. Please log in again.",
-      });
-      return;
-    }
-
     // Check if user already has an active room
     const existingRoom = roomRepo.getUserActiveRoomStrict(userId);
     if (existingRoom) {
