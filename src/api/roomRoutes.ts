@@ -1,12 +1,10 @@
 import { Router, Request, Response } from "express";
 import { RoomRepository } from "../database/repositories/roomRepository";
-import { UserRepository } from "../database/repositories/userRepository";
 import { authenticateToken, AuthRequest } from "../auth/middleware";
 import { notifyAllClientsRoomsChanged } from "../networking/websocket";
 
 const router = Router();
 const roomRepo = new RoomRepository();
-const userRepo = new UserRepository();
 
 // Create a new room (requires authentication)
 router.post("/", authenticateToken, (req: AuthRequest, res: Response) => {
@@ -40,15 +38,6 @@ router.post("/", authenticateToken, (req: AuthRequest, res: Response) => {
     if (!userId || !username) {
       console.log("[RoomAPI] ❌ Validation failed: missing auth payload");
       res.status(401).json({ error: "Authentication required" });
-      return;
-    }
-
-    const dbUser = userRepo.getUserById(userId);
-    if (!dbUser || !dbUser.is_active) {
-      console.log(
-        "[RoomAPI] ❌ Validation failed: invalid/inactive user profile",
-      );
-      res.status(403).json({ error: "Invalid user profile" });
       return;
     }
 

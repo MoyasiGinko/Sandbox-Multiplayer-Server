@@ -1,73 +1,65 @@
 import { getDatabase } from "./connection";
 
+function runOneTimeHardResetIfRequested(
+  db: ReturnType<typeof getDatabase>,
+): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS system_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
+
+  const shouldReset =
+    (process.env.RESET_DB_ON_START ?? "true").toLowerCase() === "true";
+
+  if (!shouldReset) {
+    return;
+  }
+
+  const markerKey = "hard_reset_v2";
+  const markerRow = db
+    .prepare("SELECT value FROM system_meta WHERE key = ?")
+    .get(markerKey) as { value: string } | undefined;
+
+  if (markerRow?.value === "done") {
+    return;
+  }
+
+  console.warn("⚠️ RESET_DB_ON_START enabled: dropping all multiplayer tables");
+
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec(`
+    DROP TABLE IF EXISTS player_sessions;
+    DROP TABLE IF EXISTS match_history;
+    DROP TABLE IF EXISTS rooms;
+    DROP TABLE IF EXISTS player_stats;
+    DROP TABLE IF EXISTS worlds;
+    DROP TABLE IF EXISTS users;
+  `);
+  db.exec("PRAGMA foreign_keys = ON");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS system_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
+  db.prepare(
+    `
+    INSERT INTO system_meta (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `,
+  ).run(markerKey, "done");
+}
+
 export function runMigrations(): void {
   const db = getDatabase();
 
   console.log("Running database migrations...");
 
-  // Users table
-  db.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            display_name TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            last_login DATETIME,
-            is_active BOOLEAN DEFAULT 1
-        )
-    `);
-
-  // Ensure display_name column exists for older databases
-  const columns = db.prepare("PRAGMA table_info(users)").all();
-  const hasDisplayName = columns.some(
-    (col: any) => col.name === "display_name",
-  );
-  if (!hasDisplayName) {
-    db.exec(`
-          ALTER TABLE users
-          ADD COLUMN display_name TEXT
-      `);
-  }
-
-  const hasAuthSource = columns.some((col: any) => col.name === "auth_source");
-  if (!hasAuthSource) {
-    db.exec(`
-          ALTER TABLE users
-          ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local'
-      `);
-  }
-
-  // Backfill missing display names to match username
-  db.exec(`
-        UPDATE users
-        SET display_name = username
-        WHERE display_name IS NULL OR display_name = ''
-    `);
-
-  // Mark Django-projected identities so local credential rows can be audited/cleaned safely later.
-  db.exec(`
-        UPDATE users
-        SET auth_source = 'external'
-        WHERE password_hash = 'external_auth'
-           OR email LIKE 'django_user_%@local.invalid'
-    `);
-
-  // Player stats table
-  db.exec(`
-        CREATE TABLE IF NOT EXISTS player_stats (
-            user_id INTEGER PRIMARY KEY,
-            kills INTEGER DEFAULT 0,
-            deaths INTEGER DEFAULT 0,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            playtime_seconds INTEGER DEFAULT 0,
-            matches_played INTEGER DEFAULT 0,
-            last_match DATETIME,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    `);
+  runOneTimeHardResetIfRequested(db);
 
   // Rooms table
   db.exec(`
@@ -83,8 +75,7 @@ export function runMigrations(): void {
             is_active BOOLEAN DEFAULT 1,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             started_at DATETIME,
-            inactive_since DATETIME,
-            FOREIGN KEY (host_user_id) REFERENCES users(id)
+            inactive_since DATETIME
         )
     `);
 
@@ -109,7 +100,6 @@ export function runMigrations(): void {
             room_id TEXT NOT NULL,
             joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, room_id),
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
         )
     `);
@@ -128,47 +118,13 @@ export function runMigrations(): void {
       ON player_sessions(user_id)
     `);
 
-  // Match history table
-  db.exec(`
-        CREATE TABLE IF NOT EXISTS match_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            room_id TEXT NOT NULL,
-            gamemode TEXT NOT NULL,
-            winner_user_id INTEGER,
-            started_at DATETIME,
-            ended_at DATETIME,
-            duration_seconds INTEGER
-        )
-    `);
-
-  // Worlds table
-  db.exec(`
-        CREATE TABLE IF NOT EXISTS worlds (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name VARCHAR(255) NOT NULL,
-            featured BOOLEAN NOT NULL DEFAULT 0,
-            date DATE NOT NULL,
-            downloads INTEGER NOT NULL DEFAULT 0 CHECK (downloads >= 0),
-            version VARCHAR(64) NOT NULL,
-            author VARCHAR(255) NOT NULL,
-            image TEXT NOT NULL,
-            tbw TEXT NOT NULL,
-            reports INTEGER NOT NULL DEFAULT 0 CHECK (reports >= 0),
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-
   // Create indexes for better query performance
   db.exec(`
         CREATE INDEX IF NOT EXISTS idx_rooms_gamemode ON rooms(gamemode);
         CREATE INDEX IF NOT EXISTS idx_rooms_is_active ON rooms(is_active);
         CREATE INDEX IF NOT EXISTS idx_rooms_is_public ON rooms(is_public);
-        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-        CREATE INDEX IF NOT EXISTS idx_users_auth_source ON users(auth_source);
-        CREATE INDEX IF NOT EXISTS idx_worlds_featured ON worlds(featured);
-        CREATE INDEX IF NOT EXISTS idx_worlds_author ON worlds(author);
-        CREATE INDEX IF NOT EXISTS idx_worlds_downloads ON worlds(downloads);
+      CREATE INDEX IF NOT EXISTS idx_player_sessions_user_id ON player_sessions(user_id);
+      CREATE INDEX IF NOT EXISTS idx_player_sessions_room_id ON player_sessions(room_id);
     `);
 
   console.log("Database migrations completed successfully");

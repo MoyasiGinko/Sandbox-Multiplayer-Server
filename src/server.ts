@@ -104,14 +104,14 @@ server.listen(config.port, () => {
   // eslint-disable-next-line no-console
   console.log(`Server is running on port ${config.port} (pid=${process.pid})`);
   console.log(`API endpoints available:`);
-  console.log(`  - POST /api/auth/register`);
-  console.log(`  - POST /api/auth/login`);
-  console.log(`  - GET  /api/auth/verify`);
+  console.log(`  - POST /api/auth/register (Deprecated: use Django)`);
+  console.log(`  - POST /api/auth/login (Deprecated: use Django)`);
+  console.log(`  - GET  /api/auth/verify (Deprecated: use Django)`);
   console.log(`  - GET  /api/rooms (Server List)`);
   console.log(`  - GET  /api/rooms/:id`);
   console.log(`  - GET  /api/users (Deprecated: use Django)`);
   console.log(`  - GET  /api/users/online (Deprecated: use Django)`);
-  console.log(`  - GET  /api/users/:id/stats`);
+  console.log(`  - GET  /api/users/:id/stats (Deprecated: use Django)`);
   console.log(`  - GET  /api/leaderboard`);
 
   const initial = collectRegistryStats();

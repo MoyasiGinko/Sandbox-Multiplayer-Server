@@ -4,7 +4,6 @@ import { logInfo, logError } from "../utils/logger";
 import { RoomManager, GameRoom } from "../game/roomManager";
 import { verifyToken } from "../auth/jwt";
 import { RoomRepository } from "../database/repositories/roomRepository";
-import { UserRepository } from "../database/repositories/userRepository";
 
 type Message = { type: string; data?: unknown };
 
@@ -23,7 +22,6 @@ type ClientSession = {
 const roomManager = new RoomManager();
 const clientSessions = new Map<WebSocket, ClientSession>();
 const roomRepo = new RoomRepository();
-const userRepo = new UserRepository();
 const activeUserRoomLocks = new Map<
   number,
   { roomId: string; ws: WebSocket }
@@ -105,28 +103,7 @@ function validateSessionIdentity(
     };
   }
 
-  let dbUser = userRepo.getUserById(session.userId);
-  if (!dbUser || !dbUser.is_active) {
-    try {
-      dbUser = userRepo.ensureExternalUser(
-        session.userId,
-        session.username,
-        session.name,
-      );
-    } catch {
-      dbUser = null;
-    }
-  }
-
-  if (!dbUser || !dbUser.is_active) {
-    return {
-      ok: false,
-      reason: "invalid_user_profile",
-      message: "User profile not found or inactive",
-    };
-  }
-
-  const canonicalUsername = dbUser.username.trim();
+  const canonicalUsername = session.username.trim();
   if (canonicalUsername.length === 0) {
     return {
       ok: false,
@@ -139,15 +116,15 @@ function validateSessionIdentity(
   session.username = canonicalUsername;
 
   const displayName =
-    dbUser.display_name && dbUser.display_name.trim().length > 0
-      ? dbUser.display_name.trim()
+    session.name && session.name.trim().length > 0
+      ? session.name.trim()
       : canonicalUsername;
 
   session.name = displayName;
 
   return {
     ok: true,
-    userId: dbUser.id,
+    userId: session.userId,
     username: canonicalUsername,
     displayName,
   };
@@ -285,31 +262,13 @@ export function setupWebSocket(server: http.Server) {
             // Verify JWT token
             const user = verifyToken(token);
             if (user) {
-              let syncedUser = null;
-              try {
-                syncedUser = userRepo.ensureExternalUser(
-                  user.userId,
-                  user.username,
-                  user.display_name,
-                );
-              } catch (error) {
-                logError(
-                  `failed to sync authenticated user ${user.userId}: ${String(error)}`,
-                );
-                return send(ws, "error", { reason: "user_sync_failed" });
-              }
-
-              if (!syncedUser || !syncedUser.is_active) {
-                return send(ws, "error", {
-                  reason: "invalid_user_profile",
-                  message: "Unable to load authenticated user profile",
-                });
-              }
-
               session.userId = user.userId;
               session.isAuthenticated = true;
-              session.username = syncedUser.username;
-              session.name = syncedUser.display_name || syncedUser.username;
+              session.username = user.username;
+              session.name =
+                user.display_name && user.display_name.trim().length > 0
+                  ? user.display_name
+                  : user.username;
               logInfo(
                 `authenticated user: userId=${user.userId} username=${session.username}`,
               );
