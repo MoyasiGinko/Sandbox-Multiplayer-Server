@@ -29,13 +29,9 @@ export class RoomManager {
     version: string,
     hostName: string,
     hostUserIdOrIp: number | string,
-    hostIpMaybe?: string,
+    _hostIpMaybe?: string,
   ): GameRoom {
     const hostUserId = typeof hostUserIdOrIp === "number" ? hostUserIdOrIp : -1;
-    const hostIp =
-      typeof hostUserIdOrIp === "string"
-        ? hostUserIdOrIp
-        : (hostIpMaybe ?? "unknown");
     const roomId = nanoid(6);
     const room: GameRoom = {
       id: roomId,
@@ -60,8 +56,8 @@ export class RoomManager {
   createRoomWithId(
     roomId: string,
     version: string,
-    hostName: string,
-    hostIp: string,
+    _hostName: string,
+    _hostIp: string,
   ): GameRoom {
     const room: GameRoom = {
       id: roomId,

@@ -7,11 +7,7 @@ import {
 } from "./networking/websocket";
 import { runMigrations } from "./database/migrations";
 import { RoomRepository } from "./database/repositories/roomRepository";
-import authRoutes from "./api/authRoutes";
 import roomRoutes from "./api/roomRoutes";
-import statsRoutes from "./api/statsRoutes";
-import userRoutes from "./api/userRoutes";
-import worldRoutes from "./api/worldRoutes";
 import {
   heartbeatGameServer,
   registerGameServer,
@@ -29,11 +25,7 @@ console.log("Initializing database...");
 runMigrations();
 
 // API Routes
-app.use("/api/auth", authRoutes);
 app.use("/api/rooms", roomRoutes);
-app.use("/api/users", userRoutes);
-app.use("/api/worlds", worldRoutes);
-app.use("/api", statsRoutes);
 
 // Health check
 app.get("/health", (_req: Request, res: Response) => {
@@ -104,15 +96,8 @@ server.listen(config.port, () => {
   // eslint-disable-next-line no-console
   console.log(`Server is running on port ${config.port} (pid=${process.pid})`);
   console.log(`API endpoints available:`);
-  console.log(`  - POST /api/auth/register (Deprecated: use Django)`);
-  console.log(`  - POST /api/auth/login (Deprecated: use Django)`);
-  console.log(`  - GET  /api/auth/verify (Deprecated: use Django)`);
   console.log(`  - GET  /api/rooms (Server List)`);
   console.log(`  - GET  /api/rooms/:id`);
-  console.log(`  - GET  /api/users (Deprecated: use Django)`);
-  console.log(`  - GET  /api/users/online (Deprecated: use Django)`);
-  console.log(`  - GET  /api/users/:id/stats (Deprecated: use Django)`);
-  console.log(`  - GET  /api/leaderboard (Deprecated: use Django)`);
 
   const initial = collectRegistryStats();
   registerGameServer(initial.currentPlayers, initial.maxPlayers)

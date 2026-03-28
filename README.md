@@ -2,29 +2,26 @@
 
 ## Overview
 
-This project is a backend game server built using Node.js and TypeScript. It provides a server-authoritative architecture for a multiplayer physics-based sandbox game, supporting various networking protocols and game modes.
+This project is a backend game server built using Node.js and TypeScript. It provides a server-authoritative architecture for room-based multiplayer over WebSocket.
 
 ## Features
 
-- **Networking**: Implements ENet and WebSocket protocols for efficient data transmission and real-time communication.
-- **Game Management**: Supports multiple game modes, player management, and dynamic world loading.
+- **Networking**: WebSocket protocol for real-time room communication.
+- **Room Management**: Host/join flow, room lifecycle, player sessions, and relayed state.
 - **Logging**: Structured logging utilities for monitoring server events and errors.
 
 ## Project Structure
 
-```
+```text
 backend-game-server
 ├── src
 │   ├── server.ts          # Entry point for the server
 │   ├── config             # Configuration settings
 │   │   └── index.ts       # Exports server configuration
-│   ├── networking          # Networking protocols
-│   │   ├── enet.ts        # ENet protocol implementation
+│   ├── networking          # Networking layer
 │   │   └── websocket.ts    # WebSocket management
-│   ├── game               # Game logic and management
-│   │   ├── world.ts       # Game world management
-│   │   ├── players.ts     # Player instance management
-│   │   └── gamemodes.ts   # Game modes definitions
+│   ├── game               # Core room logic
+│   │   └── roomManager.ts
 │   └── utils              # Utility functions
 │       └── logger.ts      # Logging utilities
 ├── package.json           # npm configuration
@@ -35,34 +32,42 @@ backend-game-server
 ## Installation
 
 1. Clone the repository:
-   ```
+
+   ```bash
    git clone <repository-url>
    ```
+
 2. Navigate to the project directory:
-   ```
+
+   ```bash
    cd backend-game-server
    ```
+
 3. Install dependencies:
-   ```
+
+   ```bash
    npm install
    ```
+
 4. Configure environment variables:
-   ```
+
+   ```bash
    cp .env.example .env
    ```
+
    Update secrets and URLs in `.env` before running in shared or production environments.
 
 ## Usage
 
 To start the server, run:
 
-```
+```bash
 npm start
 ```
 
-# Tinybox External Node Server
+## Tinybox External Node Server
 
-Optional room-based multiplayer backend that can coexist with the built-in ENet networking. Hosts can create a room from their PC; other players join over the network via WebSocket. The Godot client will choose this backend via a backend selector (planned in Main.gd).
+Optional room-based multiplayer backend. Hosts can create a room; other players join over the network via WebSocket.
 
 ## Features (initial)
 
@@ -92,7 +97,7 @@ ENV:
 
 ## Notes
 
-- This server is stateless across restarts and does not yet persist bans or worlds.
+- Room/session data is runtime-focused and periodically cleaned up.
 - Security/auth is minimal; production use should add auth + rate limits + TLS.
 
 ## Contributing
