@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket, RawData } from "ws";
 import http from "http";
 import { logInfo, logError, logWarning } from "../utils/logger";
 import { RoomManager, GameRoom } from "../game/roomManager";
-import { verifyToken } from "../auth/jwt";
+import { verifyTokenWithFallback } from "../auth/jwt";
 import { RoomRepository } from "../database/repositories/roomRepository";
 import {
   reportMatchToDjango,
@@ -246,7 +246,7 @@ export function setupWebSocket(server: http.Server) {
     clientSessions.set(ws, session);
     logInfo(`ws: client connected from ${ip}`);
 
-    ws.on("message", (raw: RawData) => {
+    ws.on("message", async (raw: RawData) => {
       const msg = validateJson(raw.toString());
       if (!msg) {
         return send(ws, "error", { reason: "bad_json" });
@@ -266,7 +266,7 @@ export function setupWebSocket(server: http.Server) {
           const token = (msg.data as any).token;
           if (token) {
             // Verify JWT token
-            const user = verifyToken(token);
+            const user = await verifyTokenWithFallback(token);
             if (user) {
               session.userId = user.userId;
               session.isAuthenticated = true;
