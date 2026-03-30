@@ -4,11 +4,32 @@ import { authenticateToken, AuthRequest } from "../auth/middleware";
 import { notifyAllClientsRoomsChanged } from "../networking/websocket";
 import {
   getCachedServerRoomCapacity,
+  heartbeatGameServer,
   refreshServerRoomCapacity,
 } from "../integration/djangoRegistry";
 
 const router = Router();
 const roomRepo = new RoomRepository();
+
+async function syncRegistryRoomStateNow(): Promise<void> {
+  const activeRooms = roomRepo.getAllActiveRooms();
+  const currentPlayers = activeRooms.reduce(
+    (sum, room) => sum + room.current_players,
+    0,
+  );
+  const maxPlayers = activeRooms.reduce((sum, room) => sum + room.max_players, 0);
+  const currentRooms = roomRepo.countActiveRooms();
+
+  try {
+    await heartbeatGameServer(
+      currentPlayers,
+      maxPlayers > 0 ? maxPlayers : 64,
+      currentRooms,
+    );
+  } catch (error) {
+    console.warn("[RoomAPI] ⚠️ Failed immediate registry sync:", error);
+  }
+}
 
 // Create a new room (requires authentication)
 router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
@@ -111,6 +132,7 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
     // Notify all connected clients that room list has changed
     console.log("[RoomAPI] 📢 Broadcasting room creation to all clients...");
     notifyAllClientsRoomsChanged();
+    void syncRegistryRoomStateNow();
 
     console.log("[RoomAPI] 📤 Sending response with room data");
     res.status(201).json({

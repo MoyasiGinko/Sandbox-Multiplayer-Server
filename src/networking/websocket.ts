@@ -4,6 +4,7 @@ import { logInfo, logError, logWarning } from "../utils/logger";
 import { RoomManager, GameRoom } from "../game/roomManager";
 import { verifyTokenWithFallback } from "../auth/jwt";
 import { RoomRepository } from "../database/repositories/roomRepository";
+import { heartbeatGameServer } from "../integration/djangoRegistry";
 import {
   reportMatchToDjango,
   MatchPlayerReport,
@@ -31,6 +32,28 @@ const activeUserRoomLocks = new Map<
   number,
   { roomId: string; ws: WebSocket }
 >();
+
+async function syncRegistryRoomStateNow(): Promise<void> {
+  const activeRooms = roomRepo.getAllActiveRooms();
+  const currentPlayers = activeRooms.reduce(
+    (sum, room) => sum + room.current_players,
+    0,
+  );
+  const maxPlayers = activeRooms.reduce((sum, room) => sum + room.max_players, 0);
+  const currentRooms = roomRepo.countActiveRooms();
+
+  try {
+    await heartbeatGameServer(
+      currentPlayers,
+      maxPlayers > 0 ? maxPlayers : 64,
+      currentRooms,
+    );
+  } catch (error) {
+    logWarning(
+      `registry sync failed after room state change: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
 
 type IdentityValidationResult =
   | {
@@ -204,6 +227,7 @@ function cleanupClient(ws: WebSocket) {
 
       // Keep room list UI in sync when membership/room state may have changed.
       notifyAllClientsRoomsChanged();
+      void syncRegistryRoomStateNow();
 
       // If the host left and there are still players, promote the next player
       const remainingMembers = roomManager.getRoomMembers(roomId);
@@ -426,6 +450,7 @@ export function setupWebSocket(server: http.Server) {
 
           // Host confirmation updates room membership count/state.
           notifyAllClientsRoomsChanged();
+          void syncRegistryRoomStateNow();
 
           send(ws, "room_created", {
             roomId: roomId,
@@ -670,6 +695,7 @@ export function setupWebSocket(server: http.Server) {
 
           // Player count/state may have changed due to successful join.
           notifyAllClientsRoomsChanged();
+          void syncRegistryRoomStateNow();
 
           send(ws, "room_joined", {
             roomId: roomId,
