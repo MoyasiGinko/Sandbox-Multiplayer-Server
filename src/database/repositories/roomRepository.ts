@@ -66,7 +66,8 @@ export class RoomRepository {
   }
 
   getAllActiveRooms(gamemode?: string): Room[] {
-    let query = "SELECT * FROM rooms WHERE is_active = 1 AND is_public = 1";
+    let query =
+      "SELECT * FROM rooms WHERE is_active = 1 AND is_public = 1 AND current_players > 0";
     const params: any[] = [];
 
     if (gamemode) {
@@ -82,7 +83,7 @@ export class RoomRepository {
 
   countActiveRooms(): number {
     const stmt = this.db.prepare(
-      "SELECT COUNT(*) as count FROM rooms WHERE is_active = 1",
+      "SELECT COUNT(*) as count FROM rooms WHERE is_active = 1 AND current_players > 0",
     );
     const result = stmt.get() as { count: number };
     return result.count;
