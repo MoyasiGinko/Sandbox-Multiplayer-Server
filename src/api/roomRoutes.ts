@@ -31,6 +31,24 @@ async function syncRegistryRoomStateNow(): Promise<void> {
   }
 }
 
+async function resolveAuthoritativeCapacityForCreate(activeRoomCount: number): Promise<{
+  maxRooms: number | null;
+  authoritativeCurrentRooms: number;
+}> {
+  let capacity = getCachedServerRoomCapacity();
+  try {
+    capacity = await refreshServerRoomCapacity();
+  } catch (error) {
+    console.warn("[RoomAPI] ⚠️ Failed to refresh room capacity from Django:", error);
+  }
+
+  return {
+    maxRooms: capacity.maxRooms,
+    // Use the larger value to avoid over-allocating when either side lags briefly.
+    authoritativeCurrentRooms: Math.max(activeRoomCount, capacity.currentRooms),
+  };
+}
+
 // Create a new room (requires authentication)
 router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
@@ -67,24 +85,27 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
     }
 
     const activeRoomCount = roomRepo.countActiveRooms();
-    let capacity = getCachedServerRoomCapacity();
-    try {
-      capacity = await refreshServerRoomCapacity();
-    } catch (error) {
-      console.warn("[RoomAPI] ⚠️ Failed to refresh room capacity from Django:", error);
+    const capacity = await resolveAuthoritativeCapacityForCreate(activeRoomCount);
+
+    if (capacity.maxRooms === null) {
+      res.status(503).json({
+        error: "room_capacity_unavailable",
+        message: "Server room capacity is unavailable. Please try again shortly.",
+      });
+      return;
     }
 
-    if (capacity.maxRooms !== null && activeRoomCount >= capacity.maxRooms) {
+    if (capacity.authoritativeCurrentRooms >= capacity.maxRooms) {
       console.log(
         "[RoomAPI] ❌ Room capacity reached:",
-        activeRoomCount,
+        capacity.authoritativeCurrentRooms,
         "/",
         capacity.maxRooms,
       );
       res.status(409).json({
         error: "room_capacity_reached",
         message: "Server room limit reached. No more rooms can be created.",
-        current_rooms: activeRoomCount,
+        current_rooms: capacity.authoritativeCurrentRooms,
         max_rooms: capacity.maxRooms,
       });
       return;
@@ -147,10 +168,9 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
         is_public: room.is_public,
       },
       server_capacity: {
-        current_rooms: activeRoomCount + 1,
+        current_rooms: capacity.authoritativeCurrentRooms,
         max_rooms: capacity.maxRooms,
-        can_create_room:
-          capacity.maxRooms === null ? true : activeRoomCount + 1 < capacity.maxRooms,
+        can_create_room: capacity.authoritativeCurrentRooms < capacity.maxRooms,
       },
     });
   } catch (error) {
