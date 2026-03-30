@@ -80,6 +80,14 @@ export class RoomRepository {
     return stmt.all(...params) as Room[];
   }
 
+  countActiveRooms(): number {
+    const stmt = this.db.prepare(
+      "SELECT COUNT(*) as count FROM rooms WHERE is_active = 1",
+    );
+    const result = stmt.get() as { count: number };
+    return result.count;
+  }
+
   updatePlayerCount(roomId: string, count: number): void {
     const stmt = this.db.prepare(`
             UPDATE rooms

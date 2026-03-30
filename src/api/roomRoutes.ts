@@ -2,12 +2,16 @@ import { Router, Request, Response } from "express";
 import { RoomRepository } from "../database/repositories/roomRepository";
 import { authenticateToken, AuthRequest } from "../auth/middleware";
 import { notifyAllClientsRoomsChanged } from "../networking/websocket";
+import {
+  getCachedServerRoomCapacity,
+  refreshServerRoomCapacity,
+} from "../integration/djangoRegistry";
 
 const router = Router();
 const roomRepo = new RoomRepository();
 
 // Create a new room (requires authentication)
-router.post("/", authenticateToken, (req: AuthRequest, res: Response) => {
+router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const { gamemode, mapName, maxPlayers, isPublic } = req.body;
     const userId = req.user?.userId;
@@ -38,6 +42,30 @@ router.post("/", authenticateToken, (req: AuthRequest, res: Response) => {
     if (!userId || !username) {
       console.log("[RoomAPI] ❌ Validation failed: missing auth payload");
       res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+
+    const activeRoomCount = roomRepo.countActiveRooms();
+    let capacity = getCachedServerRoomCapacity();
+    try {
+      capacity = await refreshServerRoomCapacity();
+    } catch (error) {
+      console.warn("[RoomAPI] ⚠️ Failed to refresh room capacity from Django:", error);
+    }
+
+    if (capacity.maxRooms !== null && activeRoomCount >= capacity.maxRooms) {
+      console.log(
+        "[RoomAPI] ❌ Room capacity reached:",
+        activeRoomCount,
+        "/",
+        capacity.maxRooms,
+      );
+      res.status(409).json({
+        error: "room_capacity_reached",
+        message: "Server room limit reached. No more rooms can be created.",
+        current_rooms: activeRoomCount,
+        max_rooms: capacity.maxRooms,
+      });
       return;
     }
 
@@ -96,6 +124,12 @@ router.post("/", authenticateToken, (req: AuthRequest, res: Response) => {
         current_players: room.current_players,
         is_public: room.is_public,
       },
+      server_capacity: {
+        current_rooms: activeRoomCount + 1,
+        max_rooms: capacity.maxRooms,
+        can_create_room:
+          capacity.maxRooms === null ? true : activeRoomCount + 1 < capacity.maxRooms,
+      },
     });
   } catch (error) {
     console.error("[RoomAPI] ❌ ERROR creating room - Full Error:", error);
@@ -127,9 +161,24 @@ router.get("/", async (req: Request, res: Response) => {
       created_at: room.created_at,
       is_full: room.current_players >= room.max_players,
     }));
+
+    let capacity = getCachedServerRoomCapacity();
+    try {
+      capacity = await refreshServerRoomCapacity();
+    } catch (error) {
+      console.warn("[RoomAPI] ⚠️ Failed to refresh room capacity for list:", error);
+    }
+
+    const currentRooms = roomRepo.countActiveRooms();
     res.json({
       count: roomList.length,
       rooms: roomList,
+      server_capacity: {
+        current_rooms: currentRooms,
+        max_rooms: capacity.maxRooms,
+        can_create_room:
+          capacity.maxRooms === null ? true : currentRooms < capacity.maxRooms,
+      },
     });
   } catch (error) {
     console.error("[RoomAPI] ❌ ERROR fetching rooms:", error);

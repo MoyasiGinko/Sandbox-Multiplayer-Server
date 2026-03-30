@@ -76,8 +76,10 @@ setInterval(() => {
 function collectRegistryStats(): {
   currentPlayers: number;
   maxPlayers: number;
+  currentRooms: number;
 } {
   const activeRooms = roomRepo.getAllActiveRooms();
+  const currentRooms = roomRepo.countActiveRooms();
   const currentPlayers = activeRooms.reduce(
     (sum, room) => sum + room.current_players,
     0,
@@ -89,6 +91,7 @@ function collectRegistryStats(): {
   return {
     currentPlayers,
     maxPlayers: maxPlayers > 0 ? maxPlayers : 64,
+    currentRooms,
   };
 }
 
@@ -100,7 +103,11 @@ server.listen(config.port, () => {
   console.log(`  - GET  /api/rooms/:id`);
 
   const initial = collectRegistryStats();
-  registerGameServer(initial.currentPlayers, initial.maxPlayers)
+  registerGameServer(
+    initial.currentPlayers,
+    initial.maxPlayers,
+    initial.currentRooms,
+  )
     .then(() => {
       console.log(
         `📡 Registered with Django registry at ${config.djangoRegistryBaseUrl}`,
@@ -113,7 +120,11 @@ server.listen(config.port, () => {
 
 setInterval(() => {
   const stats = collectRegistryStats();
-  heartbeatGameServer(stats.currentPlayers, stats.maxPlayers).catch(
+  heartbeatGameServer(
+    stats.currentPlayers,
+    stats.maxPlayers,
+    stats.currentRooms,
+  ).catch(
     (error: Error) => {
       console.warn(`⚠️ Registry heartbeat failed: ${error.message}`);
     },
