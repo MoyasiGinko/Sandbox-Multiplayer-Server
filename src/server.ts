@@ -17,6 +17,17 @@ const app = express();
 const server = http.createServer(app);
 const roomRepo = new RoomRepository();
 
+function syncRegistryRoomStateNow(): void {
+  const stats = collectRegistryStats();
+  heartbeatGameServer(
+    stats.currentPlayers,
+    stats.maxPlayers,
+    stats.currentRooms,
+  ).catch((error: Error) => {
+    console.warn(`⚠️ Immediate registry sync failed: ${error.message}`);
+  });
+}
+
 // Middleware
 app.use(express.json());
 
@@ -41,6 +52,7 @@ if (markedStartup > 0) {
   console.log(
     `🧹 Startup marked ${markedStartup} stale empty active room(s) inactive`,
   );
+  syncRegistryRoomStateNow();
 }
 
 server.on("error", (error: NodeJS.ErrnoException) => {
@@ -70,6 +82,7 @@ setInterval(() => {
 
   if (markedInactive > 0 || cleaned > 0) {
     notifyAllClientsRoomsChanged();
+    syncRegistryRoomStateNow();
   }
 }, 30 * 1000);
 
