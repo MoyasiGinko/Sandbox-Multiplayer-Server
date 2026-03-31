@@ -39,7 +39,10 @@ async function syncRegistryRoomStateNow(): Promise<void> {
     (sum, room) => sum + room.current_players,
     0,
   );
-  const maxPlayers = activeRooms.reduce((sum, room) => sum + room.max_players, 0);
+  const maxPlayers = activeRooms.reduce(
+    (sum, room) => sum + room.max_players,
+    0,
+  );
   const currentRooms = roomRepo.countActiveRooms();
 
   try {
@@ -688,6 +691,7 @@ export function setupWebSocket(server: http.Server) {
           // Player count already updated by addPlayerSession, no need to update again
 
           const members = roomManager.getRoomMembers(roomId);
+          const chatHistory = roomRepo.getRecentRoomChatMessages(roomId, 100);
           console.log(
             `[WebSocket] 👥 Room ${roomId} members:`,
             members.map((m) => `peer=${m.peerId} name=${m.name}`),
@@ -708,6 +712,12 @@ export function setupWebSocket(server: http.Server) {
             gamemode: dbRoom?.gamemode || "Deathmatch",
             mapName: dbRoom?.map_name || "Frozen Field",
             currentTbw: updatedRoom.currentTbw,
+            chatHistory: chatHistory.map((entry) => ({
+              from: entry.sender_peer_id ?? 0,
+              fromName: entry.sender_name,
+              text: entry.message,
+              createdAt: entry.created_at,
+            })),
           });
 
           console.log(
@@ -731,10 +741,23 @@ export function setupWebSocket(server: http.Server) {
           }
           const room = roomManager.getRoom(session.roomId);
           if (!room) return send(ws, "error", { reason: "room_not_found" });
-          const text =
+          const textRaw =
             typeof (msg.data as any)?.text === "string"
               ? (msg.data as any).text.slice(0, 500)
               : "";
+          const text = textRaw.trim();
+          if (text.length === 0) {
+            return;
+          }
+
+          roomRepo.addRoomChatMessage({
+            roomId: room.id,
+            senderUserId: session.userId,
+            senderPeerId: session.peerId,
+            senderName: session.name,
+            message: text,
+          });
+
           broadcast(room, "chat", {
             from: session.peerId,
             fromName: session.name,

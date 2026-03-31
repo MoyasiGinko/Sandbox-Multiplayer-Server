@@ -25,6 +25,16 @@ export interface CreateRoomInput {
   isPublic?: boolean;
 }
 
+export interface RoomChatMessage {
+  id: number;
+  room_id: string;
+  sender_user_id: number | null;
+  sender_peer_id: number | null;
+  sender_name: string;
+  message: string;
+  created_at: string;
+}
+
 export type AddPlayerSessionResult =
   | { ok: true }
   | {
@@ -40,6 +50,42 @@ export type AddPlayerSessionResult =
 
 export class RoomRepository {
   private db = getDatabase();
+
+  addRoomChatMessage(input: {
+    roomId: string;
+    senderUserId?: number | null;
+    senderPeerId?: number | null;
+    senderName: string;
+    message: string;
+  }): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO room_chat_messages (room_id, sender_user_id, sender_peer_id, sender_name, message)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      input.roomId,
+      input.senderUserId ?? null,
+      input.senderPeerId ?? null,
+      input.senderName,
+      input.message,
+    );
+  }
+
+  getRecentRoomChatMessages(
+    roomId: string,
+    limit: number = 50,
+  ): RoomChatMessage[] {
+    const safeLimit = Math.max(1, Math.min(limit, 200));
+    const stmt = this.db.prepare(`
+      SELECT id, room_id, sender_user_id, sender_peer_id, sender_name, message, created_at
+      FROM room_chat_messages
+      WHERE room_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(roomId, safeLimit) as RoomChatMessage[];
+    return rows.reverse();
+  }
 
   createRoom(input: CreateRoomInput): Room {
     const stmt = this.db.prepare(`

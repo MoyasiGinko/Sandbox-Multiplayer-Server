@@ -31,6 +31,7 @@ function runOneTimeHardResetIfRequested(
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec(`
     DROP TABLE IF EXISTS player_sessions;
+    DROP TABLE IF EXISTS room_chat_messages;
     DROP TABLE IF EXISTS match_history;
     DROP TABLE IF EXISTS rooms;
     DROP TABLE IF EXISTS player_stats;
@@ -104,6 +105,20 @@ export function runMigrations(): void {
         )
     `);
 
+  // Persistent room chat history. Rows are removed automatically when room is deleted.
+  db.exec(`
+        CREATE TABLE IF NOT EXISTS room_chat_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          room_id TEXT NOT NULL,
+          sender_user_id INTEGER,
+          sender_peer_id INTEGER,
+          sender_name TEXT NOT NULL,
+          message TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+        )
+      `);
+
   // Keep only the newest session row per user, then enforce one active room per user.
   db.exec(`
       DELETE FROM player_sessions
@@ -125,6 +140,7 @@ export function runMigrations(): void {
         CREATE INDEX IF NOT EXISTS idx_rooms_is_public ON rooms(is_public);
       CREATE INDEX IF NOT EXISTS idx_player_sessions_user_id ON player_sessions(user_id);
       CREATE INDEX IF NOT EXISTS idx_player_sessions_room_id ON player_sessions(room_id);
+      CREATE INDEX IF NOT EXISTS idx_room_chat_messages_room_id_created_at ON room_chat_messages(room_id, created_at);
     `);
 
   console.log("Database migrations completed successfully");
