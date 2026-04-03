@@ -16,6 +16,12 @@ export interface GameRoom {
   nextPeerId: number;
   currentTbw: string[];
   bannedIps: Set<string>;
+  activeGamemode: {
+    index: number;
+    params: unknown[];
+    mods: unknown[];
+    startedAtMs: number;
+  } | null;
 }
 
 export class RoomManager {
@@ -41,6 +47,7 @@ export class RoomManager {
       nextPeerId: 2,
       currentTbw: [],
       bannedIps: new Set(),
+      activeGamemode: null,
     };
     room.clients.set(1, {
       peerId: 1,
@@ -67,6 +74,7 @@ export class RoomManager {
       nextPeerId: 1, // Start at 1 so first joiner gets peerId=1
       currentTbw: [],
       bannedIps: new Set(),
+      activeGamemode: null,
     };
     // Don't add phantom host - let first joiner become host with peerId=1
     this.rooms.set(roomId, room);
@@ -148,6 +156,29 @@ export class RoomManager {
     if (room) {
       room.currentTbw = lines;
     }
+  }
+
+  setActiveGamemode(
+    roomId: string,
+    index: number,
+    params: unknown[],
+    mods: unknown[],
+    startedAtMs: number,
+  ): void {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    room.activeGamemode = {
+      index,
+      params,
+      mods,
+      startedAtMs,
+    };
+  }
+
+  clearActiveGamemode(roomId: string): void {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    room.activeGamemode = null;
   }
 
   getRoomMembers(roomId: string): RoomClient[] {

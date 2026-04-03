@@ -712,6 +712,15 @@ export function setupWebSocket(server: http.Server) {
             gamemode: dbRoom?.gamemode || "Deathmatch",
             mapName: dbRoom?.map_name || "Frozen Field",
             currentTbw: updatedRoom.currentTbw,
+            activeGamemode:
+              updatedRoom.activeGamemode === null
+                ? null
+                : {
+                    index: updatedRoom.activeGamemode.index,
+                    params: updatedRoom.activeGamemode.params,
+                    mods: updatedRoom.activeGamemode.mods,
+                    startedAtMs: updatedRoom.activeGamemode.startedAtMs,
+                  },
             chatHistory: chatHistory.map((entry) => ({
               from: entry.sender_peer_id ?? 0,
               fromName: entry.sender_name,
@@ -1031,6 +1040,32 @@ export function setupWebSocket(server: http.Server) {
             method,
             args,
           };
+
+          const sender = room.clients.get(session.peerId);
+          const senderIsHost = Boolean(sender?.isHost);
+          if (method === "remote_start_gamemode" && senderIsHost) {
+            const idxRaw = Array.isArray(args) ? args[0] : undefined;
+            const paramsRaw = Array.isArray(args) ? args[1] : [];
+            const modsRaw = Array.isArray(args) ? args[2] : [];
+            const startedRaw = Array.isArray(args) ? args[3] : 0;
+            const idx =
+              typeof idxRaw === "number"
+                ? Math.max(0, Math.floor(idxRaw))
+                : Number.parseInt(String(idxRaw ?? 0), 10) || 0;
+            const startedAtMs =
+              typeof startedRaw === "number"
+                ? Math.max(0, Math.floor(startedRaw))
+                : Number.parseInt(String(startedRaw ?? 0), 10) || Date.now();
+            roomManager.setActiveGamemode(
+              room.id,
+              idx,
+              Array.isArray(paramsRaw) ? paramsRaw : [],
+              Array.isArray(modsRaw) ? modsRaw : [],
+              startedAtMs,
+            );
+          } else if (method === "remote_end_gamemode" && senderIsHost) {
+            roomManager.clearActiveGamemode(room.id);
+          }
 
           if (
             method === "remote_tool_active" ||
