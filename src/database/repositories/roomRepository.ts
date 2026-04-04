@@ -144,6 +144,20 @@ export class RoomRepository {
     stmt.run(count, roomId);
   }
 
+  updateRoomHost(
+    roomId: string,
+    hostUserId: number,
+    hostUsername: string,
+  ): void {
+    const stmt = this.db.prepare(`
+            UPDATE rooms
+            SET host_user_id = ?,
+                host_username = ?
+            WHERE id = ?
+        `);
+    stmt.run(hostUserId, hostUsername, roomId);
+  }
+
   setRoomActive(roomId: string, isActive: boolean): void {
     const stmt = this.db.prepare(`
             UPDATE rooms

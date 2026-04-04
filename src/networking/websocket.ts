@@ -203,54 +203,90 @@ function cleanupClient(ws: WebSocket) {
   }
 
   if (roomId && peerId !== null) {
-    const room = roomManager.getRoom(roomId);
-    if (room) {
-      // Check if leaving player was the host
-      const leavingMember = room.clients.get(peerId);
-      const wasHost = leavingMember?.isHost || false;
+    handleRoomDeparture(ws, session, otherAuthenticatedSessions, true);
+  }
+}
 
-      roomManager.leaveRoom(roomId, peerId);
+function handleRoomDeparture(
+  ws: WebSocket,
+  session: ClientSession,
+  otherAuthenticatedSessions: ClientSession[],
+  isSocketClosing: boolean,
+): void {
+  const { roomId, peerId, userId } = session;
+  if (!roomId || peerId === null) {
+    if (!isSocketClosing) {
+      session.roomId = null;
+      session.peerId = null;
+    }
+    return;
+  }
 
-      // Remove player from session (decrements player count)
-      if (userId) {
-        const hasOtherSameUserInRoom = otherAuthenticatedSessions.some(
-          (s) => s.roomId === roomId,
-        );
-        if (!hasOtherSameUserInRoom) {
-          roomRepo.removePlayerSession(userId, roomId);
-          console.log(
-            `[WebSocket] 🚪 Player ${userId} disconnected from room ${roomId}`,
-          );
-        } else {
-          console.log(
-            `[WebSocket] 🔒 Preserving player session for user ${userId} in room ${roomId} (another authenticated socket is still active in-room)`,
-          );
-        }
-      }
+  const room = roomManager.getRoom(roomId);
+  if (!room) {
+    if (!isSocketClosing) {
+      session.roomId = null;
+      session.peerId = null;
+    }
+    return;
+  }
 
-      // Keep room list UI in sync when membership/room state may have changed.
-      notifyAllClientsRoomsChanged();
-      void syncRegistryRoomStateNow();
+  const leavingMember = room.clients.get(peerId);
+  const wasHost = leavingMember?.isHost || false;
 
-      // If the host left and there are still players, promote the next player
-      const remainingMembers = roomManager.getRoomMembers(roomId);
-      if (wasHost && remainingMembers.length > 0) {
-        // Promote first remaining member to host
-        remainingMembers[0].isHost = true;
-        console.log(
-          `[WebSocket] 👑 Player ${remainingMembers[0].name} promoted to host (previous host left)`,
-        );
-        // Notify all players about the new host
-        broadcast(room, "host_changed", {
-          newHostPeerId: remainingMembers[0].peerId,
-          newHostName: remainingMembers[0].name,
-        });
-      }
+  roomManager.leaveRoom(roomId, peerId);
 
-      broadcast(room, "peer_left", { peerId }, peerId);
-      logInfo(`peer left: roomId=${roomId} peerId=${peerId}`);
+  if (userId) {
+    const hasOtherSameUserInRoom = otherAuthenticatedSessions.some(
+      (s) => s.roomId === roomId,
+    );
+    if (!hasOtherSameUserInRoom) {
+      roomRepo.removePlayerSession(userId, roomId);
+      console.log(
+        `[WebSocket] 🚪 Player ${userId} left room ${roomId} (closing=${isSocketClosing})`,
+      );
+    } else {
+      console.log(
+        `[WebSocket] 🔒 Preserving player session for user ${userId} in room ${roomId} (another authenticated socket is still active in-room)`,
+      );
     }
   }
+
+  const remainingMembers = roomManager.getRoomMembers(roomId);
+  if (wasHost && remainingMembers.length > 0) {
+    const promoted = remainingMembers[0];
+    promoted.isHost = true;
+    room.hostPeerId = promoted.peerId;
+    if (promoted.userId > 0) {
+      roomRepo.updateRoomHost(roomId, promoted.userId, promoted.name);
+    }
+    console.log(
+      `[WebSocket] 👑 Player ${promoted.name} promoted to host (previous host left)`,
+    );
+    broadcast(room, "host_changed", {
+      newHostPeerId: promoted.peerId,
+      newHostName: promoted.name,
+    });
+  }
+
+  if (remainingMembers.length === 0) {
+    roomRepo.setRoomActive(roomId, false);
+    roomRepo.deleteRoom(roomId);
+    console.log(
+      `[WebSocket] 🗑️ Room ${roomId} has no users left; marked inactive and deleted`,
+    );
+  } else {
+    broadcast(room, "peer_left", { peerId }, peerId);
+    logInfo(`peer left: roomId=${roomId} peerId=${peerId}`);
+  }
+
+  if (!isSocketClosing) {
+    session.roomId = null;
+    session.peerId = null;
+  }
+
+  notifyAllClientsRoomsChanged();
+  void syncRegistryRoomStateNow();
 }
 
 export function setupWebSocket(server: http.Server) {
@@ -683,6 +719,12 @@ export function setupWebSocket(server: http.Server) {
             // This is the first player joining - make them the host
             const updatedMember = roomManager.getRoomMembers(roomId)[0];
             updatedMember.isHost = true;
+            room.hostPeerId = updatedMember.peerId;
+            roomRepo.updateRoomHost(
+              roomId,
+              identity.userId,
+              identity.displayName,
+            );
             console.log(
               `[WebSocket] 👑 Player ${identity.userId} promoted to host (first member in empty room)`,
             );
@@ -741,6 +783,41 @@ export function setupWebSocket(server: http.Server) {
           logInfo(
             `peer joined: roomId=${roomId} peerId=${peerId} name=${session.name}`,
           );
+          break;
+        }
+
+        case "leave_room": {
+          if (!session.roomId || session.peerId === null) {
+            return send(ws, "left_room", { roomId: null, peerId: null });
+          }
+
+          const otherAuthenticatedSessions = session.userId
+            ? Array.from(clientSessions.values()).filter(
+                (s) =>
+                  s.ws !== ws &&
+                  s.userId === session.userId &&
+                  s.isAuthenticated,
+              )
+            : [];
+
+          handleRoomDeparture(ws, session, otherAuthenticatedSessions, false);
+
+          if (session.userId) {
+            const lock = activeUserRoomLocks.get(session.userId);
+            if (lock && lock.ws === ws) {
+              const replacement = otherAuthenticatedSessions[0];
+              if (replacement && replacement.roomId) {
+                activeUserRoomLocks.set(session.userId, {
+                  roomId: replacement.roomId,
+                  ws: replacement.ws,
+                });
+              } else {
+                activeUserRoomLocks.delete(session.userId);
+              }
+            }
+          }
+
+          send(ws, "left_room", { roomId: null, peerId: null });
           break;
         }
 
