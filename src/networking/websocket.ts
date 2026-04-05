@@ -30,6 +30,7 @@ type ActiveGamemodePayload = {
   params: unknown[];
   mods: unknown[];
   startedAtMs: number;
+  remainingSecs: number;
 };
 
 const roomManager = new RoomManager();
@@ -167,7 +168,30 @@ function parseDbActiveGamemode(
     params,
     mods,
     startedAtMs: dbRoom.active_gamemode_started_at_ms,
+    remainingSecs: calculateRemainingSecs(
+      dbRoom.active_gamemode_started_at_ms,
+      params,
+    ),
   };
+}
+
+function calculateRemainingSecs(
+  startedAtMs: number,
+  params: unknown[],
+): number {
+  const firstParam =
+    Array.isArray(params) && params.length > 0 ? params[0] : 10;
+  const minutesRaw =
+    typeof firstParam === "number"
+      ? firstParam
+      : Number.parseInt(String(firstParam ?? 10), 10);
+  const totalSecs = Math.max(
+    1,
+    Math.floor((Number.isFinite(minutesRaw) ? minutesRaw : 10) * 60),
+  );
+  const nowMs = Date.now();
+  const elapsedSecs = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
+  return Math.max(1, totalSecs - elapsedSecs);
 }
 
 function validateSessionIdentity(
@@ -789,6 +813,10 @@ export function setupWebSocket(server: http.Server) {
                   params: updatedRoom.activeGamemode.params,
                   mods: updatedRoom.activeGamemode.mods,
                   startedAtMs: updatedRoom.activeGamemode.startedAtMs,
+                  remainingSecs: calculateRemainingSecs(
+                    updatedRoom.activeGamemode.startedAtMs,
+                    updatedRoom.activeGamemode.params,
+                  ),
                 };
           console.log(
             `[WebSocket] 👥 Room ${roomId} members:`,
