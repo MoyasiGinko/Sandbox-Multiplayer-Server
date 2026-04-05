@@ -25,6 +25,13 @@ type ClientSession = {
   accessToken: string | null;
 };
 
+type ActiveGamemodePayload = {
+  index: number;
+  params: unknown[];
+  mods: unknown[];
+  startedAtMs: number;
+};
+
 const roomManager = new RoomManager();
 const clientSessions = new Map<WebSocket, ClientSession>();
 const roomRepo = new RoomRepository();
@@ -121,6 +128,46 @@ function validateJson(raw: string): Message | null {
   } catch {
     return null;
   }
+}
+
+function parseDbActiveGamemode(
+  dbRoom: ReturnType<RoomRepository["getRoomById"]>,
+): ActiveGamemodePayload | null {
+  if (!dbRoom) {
+    return null;
+  }
+  if (
+    dbRoom.active_gamemode_index === null ||
+    dbRoom.active_gamemode_started_at_ms === null
+  ) {
+    return null;
+  }
+
+  let params: unknown[] = [];
+  let mods: unknown[] = [];
+  try {
+    const parsedParams = dbRoom.active_gamemode_params
+      ? JSON.parse(dbRoom.active_gamemode_params)
+      : [];
+    params = Array.isArray(parsedParams) ? parsedParams : [];
+  } catch {
+    params = [];
+  }
+  try {
+    const parsedMods = dbRoom.active_gamemode_mods
+      ? JSON.parse(dbRoom.active_gamemode_mods)
+      : [];
+    mods = Array.isArray(parsedMods) ? parsedMods : [];
+  } catch {
+    mods = [];
+  }
+
+  return {
+    index: dbRoom.active_gamemode_index,
+    params,
+    mods,
+    startedAtMs: dbRoom.active_gamemode_started_at_ms,
+  };
 }
 
 function validateSessionIdentity(
@@ -734,6 +781,15 @@ export function setupWebSocket(server: http.Server) {
 
           const members = roomManager.getRoomMembers(roomId);
           const chatHistory = roomRepo.getRecentRoomChatMessages(roomId, 100);
+          const activeGamemodePayload: ActiveGamemodePayload | null =
+            updatedRoom.activeGamemode === null
+              ? parseDbActiveGamemode(dbRoom)
+              : {
+                  index: updatedRoom.activeGamemode.index,
+                  params: updatedRoom.activeGamemode.params,
+                  mods: updatedRoom.activeGamemode.mods,
+                  startedAtMs: updatedRoom.activeGamemode.startedAtMs,
+                };
           console.log(
             `[WebSocket] 👥 Room ${roomId} members:`,
             members.map((m) => `peer=${m.peerId} name=${m.name}`),
@@ -754,15 +810,7 @@ export function setupWebSocket(server: http.Server) {
             gamemode: dbRoom?.gamemode || "Deathmatch",
             mapName: dbRoom?.map_name || "Frozen Field",
             currentTbw: updatedRoom.currentTbw,
-            activeGamemode:
-              updatedRoom.activeGamemode === null
-                ? null
-                : {
-                    index: updatedRoom.activeGamemode.index,
-                    params: updatedRoom.activeGamemode.params,
-                    mods: updatedRoom.activeGamemode.mods,
-                    startedAtMs: updatedRoom.activeGamemode.startedAtMs,
-                  },
+            activeGamemode: activeGamemodePayload,
             chatHistory: chatHistory.map((entry) => ({
               from: entry.sender_peer_id ?? 0,
               fromName: entry.sender_name,
@@ -1140,8 +1188,16 @@ export function setupWebSocket(server: http.Server) {
               Array.isArray(modsRaw) ? modsRaw : [],
               startedAtMs,
             );
+            roomRepo.setActiveGamemodeState(
+              room.id,
+              idx,
+              Array.isArray(paramsRaw) ? paramsRaw : [],
+              Array.isArray(modsRaw) ? modsRaw : [],
+              startedAtMs,
+            );
           } else if (method === "remote_end_gamemode" && senderIsHost) {
             roomManager.clearActiveGamemode(room.id);
+            roomRepo.clearActiveGamemodeState(room.id);
           }
 
           if (

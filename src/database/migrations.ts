@@ -70,6 +70,10 @@ export function runMigrations(): void {
             host_username TEXT NOT NULL,
             gamemode TEXT NOT NULL,
             map_name TEXT,
+        active_gamemode_index INTEGER,
+        active_gamemode_params TEXT,
+        active_gamemode_mods TEXT,
+        active_gamemode_started_at_ms INTEGER,
             max_players INTEGER DEFAULT 8,
             current_players INTEGER DEFAULT 0,
             is_public BOOLEAN DEFAULT 1,
@@ -91,6 +95,50 @@ export function runMigrations(): void {
       ADD COLUMN inactive_since DATETIME
     `);
     console.log("✅ Added inactive_since column to rooms table");
+  }
+
+  const hasActiveGamemodeIndex = roomColumns.some(
+    (col: any) => col.name === "active_gamemode_index",
+  );
+  if (!hasActiveGamemodeIndex) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN active_gamemode_index INTEGER
+    `);
+    console.log("✅ Added active_gamemode_index column to rooms table");
+  }
+
+  const hasActiveGamemodeParams = roomColumns.some(
+    (col: any) => col.name === "active_gamemode_params",
+  );
+  if (!hasActiveGamemodeParams) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN active_gamemode_params TEXT
+    `);
+    console.log("✅ Added active_gamemode_params column to rooms table");
+  }
+
+  const hasActiveGamemodeMods = roomColumns.some(
+    (col: any) => col.name === "active_gamemode_mods",
+  );
+  if (!hasActiveGamemodeMods) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN active_gamemode_mods TEXT
+    `);
+    console.log("✅ Added active_gamemode_mods column to rooms table");
+  }
+
+  const hasActiveGamemodeStartedAt = roomColumns.some(
+    (col: any) => col.name === "active_gamemode_started_at_ms",
+  );
+  if (!hasActiveGamemodeStartedAt) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN active_gamemode_started_at_ms INTEGER
+    `);
+    console.log("✅ Added active_gamemode_started_at_ms column to rooms table");
   }
 
   // Player sessions table - tracks real-time WebSocket connections
