@@ -33,6 +33,12 @@ type ActiveGamemodePayload = {
   remainingSecs: number;
 };
 
+type SelectedGamemodePayload = {
+  index: number;
+  params: unknown[];
+  mods: unknown[];
+};
+
 const roomManager = new RoomManager();
 const clientSessions = new Map<WebSocket, ClientSession>();
 const roomRepo = new RoomRepository();
@@ -172,6 +178,37 @@ function parseDbActiveGamemode(
       dbRoom.active_gamemode_started_at_ms,
       params,
     ),
+  };
+}
+
+function parseDbSelectedGamemode(
+  dbRoom: ReturnType<RoomRepository["getRoomById"]>,
+): SelectedGamemodePayload | null {
+  if (!dbRoom || dbRoom.selected_gamemode_index === null) {
+    return null;
+  }
+  let params: unknown[] = [];
+  let mods: unknown[] = [];
+  try {
+    const parsedParams = dbRoom.selected_gamemode_params
+      ? JSON.parse(dbRoom.selected_gamemode_params)
+      : [];
+    params = Array.isArray(parsedParams) ? parsedParams : [];
+  } catch {
+    params = [];
+  }
+  try {
+    const parsedMods = dbRoom.selected_gamemode_mods
+      ? JSON.parse(dbRoom.selected_gamemode_mods)
+      : [];
+    mods = Array.isArray(parsedMods) ? parsedMods : [];
+  } catch {
+    mods = [];
+  }
+  return {
+    index: dbRoom.selected_gamemode_index,
+    params,
+    mods,
   };
 }
 
@@ -818,6 +855,8 @@ export function setupWebSocket(server: http.Server) {
                     updatedRoom.activeGamemode.params,
                   ),
                 };
+          const selectedGamemodePayload: SelectedGamemodePayload | null =
+            parseDbSelectedGamemode(dbRoom);
           console.log(
             `[WebSocket] 👥 Room ${roomId} members:`,
             members.map((m) => `peer=${m.peerId} name=${m.name}`),
@@ -839,6 +878,7 @@ export function setupWebSocket(server: http.Server) {
             mapName: dbRoom?.map_name || "Frozen Field",
             currentTbw: updatedRoom.currentTbw,
             activeGamemode: activeGamemodePayload,
+            selectedGamemode: selectedGamemodePayload,
             chatHistory: chatHistory.map((entry) => ({
               from: entry.sender_peer_id ?? 0,
               fromName: entry.sender_name,
@@ -1226,6 +1266,20 @@ export function setupWebSocket(server: http.Server) {
           } else if (method === "remote_end_gamemode" && senderIsHost) {
             roomManager.clearActiveGamemode(room.id);
             roomRepo.clearActiveGamemodeState(room.id);
+          } else if (method === "remote_gamemode_menu_sync" && senderIsHost) {
+            const idxRaw = Array.isArray(args) ? args[0] : undefined;
+            const paramsRaw = Array.isArray(args) ? args[1] : [];
+            const modsRaw = Array.isArray(args) ? args[2] : [];
+            const idx =
+              typeof idxRaw === "number"
+                ? Math.max(0, Math.floor(idxRaw))
+                : Number.parseInt(String(idxRaw ?? 0), 10) || 0;
+            roomRepo.setSelectedGamemodeState(
+              room.id,
+              idx,
+              Array.isArray(paramsRaw) ? paramsRaw : [],
+              Array.isArray(modsRaw) ? modsRaw : [],
+            );
           }
 
           if (

@@ -6,6 +6,9 @@ export interface Room {
   host_username: string;
   gamemode: string;
   map_name: string | null;
+  selected_gamemode_index: number | null;
+  selected_gamemode_params: string | null;
+  selected_gamemode_mods: string | null;
   active_gamemode_index: number | null;
   active_gamemode_params: string | null;
   active_gamemode_mods: string | null;
@@ -176,6 +179,38 @@ export class RoomRepository {
     const stmt = this.db.prepare(`
             UPDATE rooms
             SET started_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        `);
+    stmt.run(roomId);
+  }
+
+  setSelectedGamemodeState(
+    roomId: string,
+    index: number,
+    params: unknown[],
+    mods: unknown[],
+  ): void {
+    const stmt = this.db.prepare(`
+            UPDATE rooms
+            SET selected_gamemode_index = ?,
+                selected_gamemode_params = ?,
+                selected_gamemode_mods = ?
+            WHERE id = ?
+        `);
+    stmt.run(
+      index,
+      JSON.stringify(Array.isArray(params) ? params : []),
+      JSON.stringify(Array.isArray(mods) ? mods : []),
+      roomId,
+    );
+  }
+
+  clearSelectedGamemodeState(roomId: string): void {
+    const stmt = this.db.prepare(`
+            UPDATE rooms
+            SET selected_gamemode_index = NULL,
+                selected_gamemode_params = NULL,
+                selected_gamemode_mods = NULL
             WHERE id = ?
         `);
     stmt.run(roomId);

@@ -70,10 +70,13 @@ export function runMigrations(): void {
             host_username TEXT NOT NULL,
             gamemode TEXT NOT NULL,
             map_name TEXT,
-        active_gamemode_index INTEGER,
-        active_gamemode_params TEXT,
-        active_gamemode_mods TEXT,
-        active_gamemode_started_at_ms INTEGER,
+            selected_gamemode_index INTEGER,
+            selected_gamemode_params TEXT,
+            selected_gamemode_mods TEXT,
+            active_gamemode_index INTEGER,
+            active_gamemode_params TEXT,
+            active_gamemode_mods TEXT,
+            active_gamemode_started_at_ms INTEGER,
             max_players INTEGER DEFAULT 8,
             current_players INTEGER DEFAULT 0,
             is_public BOOLEAN DEFAULT 1,
@@ -139,6 +142,39 @@ export function runMigrations(): void {
       ADD COLUMN active_gamemode_started_at_ms INTEGER
     `);
     console.log("✅ Added active_gamemode_started_at_ms column to rooms table");
+  }
+
+  const hasSelectedGamemodeIndex = roomColumns.some(
+    (col: any) => col.name === "selected_gamemode_index",
+  );
+  if (!hasSelectedGamemodeIndex) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN selected_gamemode_index INTEGER
+    `);
+    console.log("✅ Added selected_gamemode_index column to rooms table");
+  }
+
+  const hasSelectedGamemodeParams = roomColumns.some(
+    (col: any) => col.name === "selected_gamemode_params",
+  );
+  if (!hasSelectedGamemodeParams) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN selected_gamemode_params TEXT
+    `);
+    console.log("✅ Added selected_gamemode_params column to rooms table");
+  }
+
+  const hasSelectedGamemodeMods = roomColumns.some(
+    (col: any) => col.name === "selected_gamemode_mods",
+  );
+  if (!hasSelectedGamemodeMods) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN selected_gamemode_mods TEXT
+    `);
+    console.log("✅ Added selected_gamemode_mods column to rooms table");
   }
 
   // Player sessions table - tracks real-time WebSocket connections
