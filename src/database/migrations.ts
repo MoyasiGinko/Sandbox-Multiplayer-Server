@@ -32,6 +32,9 @@ function runOneTimeHardResetIfRequested(
   db.exec(`
     DROP TABLE IF EXISTS player_sessions;
     DROP TABLE IF EXISTS room_chat_messages;
+    DROP TABLE IF EXISTS room_match_participants;
+    DROP TABLE IF EXISTS room_match_history;
+    DROP TABLE IF EXISTS room_gamemode_history;
     DROP TABLE IF EXISTS match_history;
     DROP TABLE IF EXISTS rooms;
     DROP TABLE IF EXISTS player_stats;
@@ -153,7 +156,9 @@ export function runMigrations(): void {
       ALTER TABLE rooms
       ADD COLUMN active_gamemode_remaining_secs INTEGER
     `);
-    console.log("✅ Added active_gamemode_remaining_secs column to rooms table");
+    console.log(
+      "✅ Added active_gamemode_remaining_secs column to rooms table",
+    );
   }
 
   const hasSelectedGamemodeIndex = roomColumns.some(
@@ -215,6 +220,53 @@ export function runMigrations(): void {
         )
       `);
 
+  // Persistent gamemode sessions per room for start/end time auditing.
+  db.exec(`
+        CREATE TABLE IF NOT EXISTS room_gamemode_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          room_id TEXT NOT NULL,
+          gamemode_index INTEGER NOT NULL,
+          params_json TEXT,
+          mods_json TEXT,
+          timer_seconds INTEGER NOT NULL,
+          started_at_ms INTEGER NOT NULL,
+          ended_at_ms INTEGER NOT NULL,
+          duration_seconds INTEGER NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+        )
+      `);
+
+  // Temporary per-room match history (deleted with room), used as staging before Django transfer.
+  db.exec(`
+        CREATE TABLE IF NOT EXISTS room_match_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          room_id TEXT NOT NULL,
+          gamemode TEXT NOT NULL,
+          winner_user_id INTEGER,
+          duration_seconds INTEGER NOT NULL,
+          transferred_to_django INTEGER NOT NULL DEFAULT 0,
+          django_match_id INTEGER,
+          last_transfer_error TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+        )
+      `);
+
+  // Per-user participation rows for each room match history entry.
+  db.exec(`
+        CREATE TABLE IF NOT EXISTS room_match_participants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          match_history_id INTEGER NOT NULL,
+          user_id INTEGER NOT NULL,
+          kills INTEGER NOT NULL DEFAULT 0,
+          deaths INTEGER NOT NULL DEFAULT 0,
+          playtime_seconds INTEGER NOT NULL DEFAULT 0,
+          won INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY (match_history_id) REFERENCES room_match_history(id) ON DELETE CASCADE
+        )
+      `);
+
   // Keep only the newest session row per user, then enforce one active room per user.
   db.exec(`
       DELETE FROM player_sessions
@@ -237,6 +289,9 @@ export function runMigrations(): void {
       CREATE INDEX IF NOT EXISTS idx_player_sessions_user_id ON player_sessions(user_id);
       CREATE INDEX IF NOT EXISTS idx_player_sessions_room_id ON player_sessions(room_id);
       CREATE INDEX IF NOT EXISTS idx_room_chat_messages_room_id_created_at ON room_chat_messages(room_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_room_gamemode_history_room_id_started_at ON room_gamemode_history(room_id, started_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_room_match_history_room_id_created_at ON room_match_history(room_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_room_match_participants_match_history_id ON room_match_participants(match_history_id);
     `);
 
   console.log("Database migrations completed successfully");

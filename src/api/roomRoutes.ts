@@ -101,7 +101,8 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
     if (!capacityKnown) {
       res.status(503).json({
         error: "room_capacity_unavailable",
-        message: "Server room capacity is unavailable. Please try again shortly.",
+        message:
+          "Server room capacity is unavailable. Please try again shortly.",
       });
       return;
     }

@@ -46,6 +46,84 @@ const activeUserRoomLocks = new Map<
   number,
   { roomId: string; ws: WebSocket }
 >();
+const MATCH_TRANSFER_RETRY_INTERVAL_MS = 10_000;
+let _matchTransferRetryLoopStarted = false;
+let _matchTransferRetryInProgress = false;
+
+function findAccessTokenForRoom(roomId: string): string | null {
+  for (const session of clientSessions.values()) {
+    if (
+      session.roomId === roomId &&
+      session.isAuthenticated &&
+      typeof session.accessToken === "string" &&
+      session.accessToken.trim().length > 0
+    ) {
+      return session.accessToken;
+    }
+  }
+  return null;
+}
+
+async function retryPendingRoomMatchTransfers(): Promise<void> {
+  if (_matchTransferRetryInProgress) {
+    return;
+  }
+  _matchTransferRetryInProgress = true;
+  try {
+    const pendingMatches = roomRepo.getPendingRoomMatchHistory(25);
+    if (pendingMatches.length === 0) {
+      return;
+    }
+
+    for (const pending of pendingMatches) {
+      const accessToken = findAccessTokenForRoom(pending.room_id);
+      if (!accessToken) {
+        // Retry later when an authenticated room participant is connected.
+        continue;
+      }
+
+      const participants = roomRepo
+        .getRoomMatchParticipants(pending.id)
+        .map((entry) => {
+          return {
+            user_id: entry.user_id,
+            kills: Math.max(0, entry.kills),
+            deaths: Math.max(0, entry.deaths),
+            playtime_seconds: Math.max(0, entry.playtime_seconds),
+            won: entry.won > 0,
+          } satisfies MatchPlayerReport;
+        });
+
+      if (participants.length === 0) {
+        roomRepo.markRoomMatchHistoryTransferFailed(
+          pending.id,
+          "No match participants available for transfer",
+        );
+        continue;
+      }
+
+      try {
+        const result = await reportMatchToDjango(accessToken, {
+          room_id: pending.room_id,
+          gamemode: pending.gamemode,
+          winner_user_id: pending.winner_user_id,
+          duration_seconds: pending.duration_seconds,
+          players: participants,
+        });
+        roomRepo.markRoomMatchHistoryTransferred(
+          pending.id,
+          typeof result.match_id === "number" ? result.match_id : null,
+        );
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        roomRepo.markRoomMatchHistoryTransferFailed(pending.id, errorMessage);
+      }
+    }
+  } finally {
+    _matchTransferRetryInProgress = false;
+  }
+}
 
 async function syncRegistryRoomStateNow(): Promise<void> {
   const activeRooms = roomRepo.getAllActiveRooms();
@@ -239,7 +317,17 @@ function totalGamemodeSecondsFromParams(params: unknown[]): number {
     typeof firstParam === "number"
       ? firstParam
       : Number.parseInt(String(firstParam ?? 10), 10);
-  return Math.max(1, Math.floor((Number.isFinite(minutesRaw) ? minutesRaw : 10) * 60));
+  return Math.max(
+    1,
+    Math.floor((Number.isFinite(minutesRaw) ? minutesRaw : 10) * 60),
+  );
+}
+
+function toSafeMs(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return Date.now();
+  }
+  return Math.floor(value);
 }
 
 function parseNumber(value: unknown, fallback: number): number {
@@ -432,6 +520,13 @@ function handleRoomDeparture(
 
 export function setupWebSocket(server: http.Server) {
   const wss = new WebSocketServer({ server });
+
+  if (!_matchTransferRetryLoopStarted) {
+    _matchTransferRetryLoopStarted = true;
+    setInterval(() => {
+      void retryPendingRoomMatchTransfers();
+    }, MATCH_TRANSFER_RETRY_INTERVAL_MS);
+  }
 
   wss.on("connection", (ws: WebSocket) => {
     const ip = getClientIp(ws);
@@ -882,16 +977,16 @@ export function setupWebSocket(server: http.Server) {
               ? dbActiveGamemode
               : updatedRoom.activeGamemode === null
                 ? null
-              : {
-                  index: updatedRoom.activeGamemode.index,
-                  params: updatedRoom.activeGamemode.params,
-                  mods: updatedRoom.activeGamemode.mods,
-                  startedAtMs: updatedRoom.activeGamemode.startedAtMs,
-                  remainingSecs: calculateRemainingSecs(
-                    updatedRoom.activeGamemode.startedAtMs,
-                    updatedRoom.activeGamemode.params,
-                  ),
-                };
+                : {
+                    index: updatedRoom.activeGamemode.index,
+                    params: updatedRoom.activeGamemode.params,
+                    mods: updatedRoom.activeGamemode.mods,
+                    startedAtMs: updatedRoom.activeGamemode.startedAtMs,
+                    remainingSecs: calculateRemainingSecs(
+                      updatedRoom.activeGamemode.startedAtMs,
+                      updatedRoom.activeGamemode.params,
+                    ),
+                  };
           const selectedGamemodePayload: SelectedGamemodePayload | null =
             parseDbSelectedGamemode(dbRoom);
           console.log(
@@ -1218,6 +1313,17 @@ export function setupWebSocket(server: http.Server) {
             });
           }
 
+          const localMatchHistoryId = roomRepo.addRoomMatchHistory({
+            roomId: session.roomId,
+            gamemode,
+            winnerUserId:
+              winnerUserId && Number.isInteger(winnerUserId) && winnerUserId > 0
+                ? winnerUserId
+                : null,
+            durationSeconds,
+          });
+          roomRepo.addRoomMatchParticipants(localMatchHistoryId, players);
+
           reportMatchToDjango(session.accessToken, {
             room_id: session.roomId,
             gamemode,
@@ -1229,6 +1335,10 @@ export function setupWebSocket(server: http.Server) {
             players,
           })
             .then((result) => {
+              roomRepo.markRoomMatchHistoryTransferred(
+                localMatchHistoryId,
+                typeof result.match_id === "number" ? result.match_id : null,
+              );
               send(ws, "match_result_saved", {
                 roomId: session.roomId,
                 matchId: result.match_id ?? null,
@@ -1241,6 +1351,10 @@ export function setupWebSocket(server: http.Server) {
             .catch((err: unknown) => {
               const errorMessage =
                 err instanceof Error ? err.message : String(err);
+              roomRepo.markRoomMatchHistoryTransferFailed(
+                localMatchHistoryId,
+                errorMessage,
+              );
               logWarning(
                 `match_result persistence failed for roomId=${session.roomId}: ${errorMessage}`,
               );
@@ -1304,6 +1418,27 @@ export function setupWebSocket(server: http.Server) {
               ),
             );
           } else if (method === "remote_end_gamemode" && senderIsHost) {
+            const active = room.activeGamemode;
+            if (active !== null) {
+              const startedAtMs = toSafeMs(active.startedAtMs);
+              const endedAtMs = Date.now();
+              const durationSeconds = Math.max(
+                0,
+                Math.floor((endedAtMs - startedAtMs) / 1000),
+              );
+              roomRepo.addRoomGamemodeHistory({
+                roomId: room.id,
+                gamemodeIndex: active.index,
+                params: Array.isArray(active.params) ? active.params : [],
+                mods: Array.isArray(active.mods) ? active.mods : [],
+                timerSeconds: totalGamemodeSecondsFromParams(
+                  Array.isArray(active.params) ? active.params : [],
+                ),
+                startedAtMs,
+                endedAtMs,
+                durationSeconds,
+              });
+            }
             roomManager.clearActiveGamemode(room.id);
             roomRepo.clearActiveGamemodeState(room.id);
           } else if (method === "remote_gamemode_timer_sync" && senderIsHost) {

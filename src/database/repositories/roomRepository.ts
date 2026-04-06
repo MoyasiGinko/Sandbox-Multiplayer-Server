@@ -43,6 +43,41 @@ export interface RoomChatMessage {
   created_at: string;
 }
 
+export interface RoomGamemodeHistoryEntry {
+  id: number;
+  room_id: string;
+  gamemode_index: number;
+  params_json: string | null;
+  mods_json: string | null;
+  timer_seconds: number;
+  started_at_ms: number;
+  ended_at_ms: number;
+  duration_seconds: number;
+  created_at: string;
+}
+
+export interface RoomMatchHistoryEntry {
+  id: number;
+  room_id: string;
+  gamemode: string;
+  winner_user_id: number | null;
+  duration_seconds: number;
+  transferred_to_django: number;
+  django_match_id: number | null;
+  last_transfer_error: string | null;
+  created_at: string;
+}
+
+export interface RoomMatchParticipantEntry {
+  id: number;
+  match_history_id: number;
+  user_id: number;
+  kills: number;
+  deaths: number;
+  playtime_seconds: number;
+  won: number;
+}
+
 export type AddPlayerSessionResult =
   | { ok: true }
   | {
@@ -58,6 +93,167 @@ export type AddPlayerSessionResult =
 
 export class RoomRepository {
   private db = getDatabase();
+
+  addRoomMatchHistory(input: {
+    roomId: string;
+    gamemode: string;
+    winnerUserId: number | null;
+    durationSeconds: number;
+  }): number {
+    const stmt = this.db.prepare(`
+      INSERT INTO room_match_history (
+        room_id,
+        gamemode,
+        winner_user_id,
+        duration_seconds
+      )
+      VALUES (?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      input.roomId,
+      input.gamemode,
+      input.winnerUserId,
+      Math.max(0, Math.floor(input.durationSeconds)),
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  addRoomMatchParticipants(
+    matchHistoryId: number,
+    players: Array<{
+      user_id: number;
+      kills?: number;
+      deaths?: number;
+      playtime_seconds?: number;
+      won?: boolean;
+    }>,
+  ): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO room_match_participants (
+        match_history_id,
+        user_id,
+        kills,
+        deaths,
+        playtime_seconds,
+        won
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const insertMany = this.db.transaction(
+      (
+        participants: Array<{
+          user_id: number;
+          kills?: number;
+          deaths?: number;
+          playtime_seconds?: number;
+          won?: boolean;
+        }>,
+      ) => {
+        for (const player of participants) {
+          stmt.run(
+            matchHistoryId,
+            player.user_id,
+            Math.max(0, Number.parseInt(String(player.kills ?? 0), 10) || 0),
+            Math.max(0, Number.parseInt(String(player.deaths ?? 0), 10) || 0),
+            Math.max(
+              0,
+              Number.parseInt(String(player.playtime_seconds ?? 0), 10) || 0,
+            ),
+            player.won ? 1 : 0,
+          );
+        }
+      },
+    );
+    insertMany(players);
+  }
+
+  markRoomMatchHistoryTransferred(
+    matchHistoryId: number,
+    djangoMatchId: number | null,
+  ): void {
+    const stmt = this.db.prepare(`
+      UPDATE room_match_history
+      SET transferred_to_django = 1,
+          django_match_id = ?,
+          last_transfer_error = NULL
+      WHERE id = ?
+    `);
+    stmt.run(djangoMatchId, matchHistoryId);
+  }
+
+  markRoomMatchHistoryTransferFailed(
+    matchHistoryId: number,
+    errorMessage: string,
+  ): void {
+    const stmt = this.db.prepare(`
+      UPDATE room_match_history
+      SET transferred_to_django = 0,
+          last_transfer_error = ?
+      WHERE id = ?
+    `);
+    stmt.run(errorMessage.slice(0, 500), matchHistoryId);
+  }
+
+  getPendingRoomMatchHistory(limit: number = 25): RoomMatchHistoryEntry[] {
+    const safeLimit = Math.max(1, Math.min(limit, 200));
+    const stmt = this.db.prepare(`
+      SELECT rmh.*
+      FROM room_match_history rmh
+      INNER JOIN rooms r ON r.id = rmh.room_id
+      WHERE rmh.transferred_to_django = 0
+        AND r.is_active = 1
+      ORDER BY rmh.id ASC
+      LIMIT ?
+    `);
+    return stmt.all(safeLimit) as RoomMatchHistoryEntry[];
+  }
+
+  getRoomMatchParticipants(
+    matchHistoryId: number,
+  ): RoomMatchParticipantEntry[] {
+    const stmt = this.db.prepare(`
+      SELECT id, match_history_id, user_id, kills, deaths, playtime_seconds, won
+      FROM room_match_participants
+      WHERE match_history_id = ?
+      ORDER BY id ASC
+    `);
+    return stmt.all(matchHistoryId) as RoomMatchParticipantEntry[];
+  }
+
+  addRoomGamemodeHistory(input: {
+    roomId: string;
+    gamemodeIndex: number;
+    params: unknown[];
+    mods: unknown[];
+    timerSeconds: number;
+    startedAtMs: number;
+    endedAtMs: number;
+    durationSeconds: number;
+  }): void {
+    const stmt = this.db.prepare(`
+      INSERT INTO room_gamemode_history (
+        room_id,
+        gamemode_index,
+        params_json,
+        mods_json,
+        timer_seconds,
+        started_at_ms,
+        ended_at_ms,
+        duration_seconds
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      input.roomId,
+      input.gamemodeIndex,
+      JSON.stringify(Array.isArray(input.params) ? input.params : []),
+      JSON.stringify(Array.isArray(input.mods) ? input.mods : []),
+      Math.max(1, Math.floor(input.timerSeconds)),
+      Math.max(0, Math.floor(input.startedAtMs)),
+      Math.max(0, Math.floor(input.endedAtMs)),
+      Math.max(0, Math.floor(input.durationSeconds)),
+    );
+  }
 
   addRoomChatMessage(input: {
     roomId: string;
