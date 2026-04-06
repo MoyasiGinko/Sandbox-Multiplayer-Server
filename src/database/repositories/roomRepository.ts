@@ -13,6 +13,7 @@ export interface Room {
   active_gamemode_params: string | null;
   active_gamemode_mods: string | null;
   active_gamemode_started_at_ms: number | null;
+  active_gamemode_remaining_secs: number | null;
   max_players: number;
   current_players: number;
   is_public: boolean;
@@ -222,13 +223,15 @@ export class RoomRepository {
     params: unknown[],
     mods: unknown[],
     startedAtMs: number,
+    remainingSecs: number | null = null,
   ): void {
     const stmt = this.db.prepare(`
             UPDATE rooms
             SET active_gamemode_index = ?,
                 active_gamemode_params = ?,
                 active_gamemode_mods = ?,
-                active_gamemode_started_at_ms = ?
+                active_gamemode_started_at_ms = ?,
+                active_gamemode_remaining_secs = ?
             WHERE id = ?
         `);
     stmt.run(
@@ -236,6 +239,7 @@ export class RoomRepository {
       JSON.stringify(Array.isArray(params) ? params : []),
       JSON.stringify(Array.isArray(mods) ? mods : []),
       startedAtMs,
+      remainingSecs,
       roomId,
     );
   }
@@ -246,7 +250,8 @@ export class RoomRepository {
             SET active_gamemode_index = NULL,
                 active_gamemode_params = NULL,
                 active_gamemode_mods = NULL,
-                active_gamemode_started_at_ms = NULL
+              active_gamemode_started_at_ms = NULL,
+              active_gamemode_remaining_secs = NULL
             WHERE id = ?
         `);
     stmt.run(roomId);

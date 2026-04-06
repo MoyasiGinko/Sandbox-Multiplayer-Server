@@ -174,10 +174,11 @@ function parseDbActiveGamemode(
     params,
     mods,
     startedAtMs: dbRoom.active_gamemode_started_at_ms,
-    remainingSecs: calculateRemainingSecs(
-      dbRoom.active_gamemode_started_at_ms,
-      params,
-    ),
+    remainingSecs:
+      typeof dbRoom.active_gamemode_remaining_secs === "number" &&
+      dbRoom.active_gamemode_remaining_secs >= 0
+        ? Math.max(1, Math.floor(dbRoom.active_gamemode_remaining_secs))
+        : calculateRemainingSecs(dbRoom.active_gamemode_started_at_ms, params),
   };
 }
 
@@ -229,6 +230,38 @@ function calculateRemainingSecs(
   const nowMs = Date.now();
   const elapsedSecs = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
   return Math.max(1, totalSecs - elapsedSecs);
+}
+
+function totalGamemodeSecondsFromParams(params: unknown[]): number {
+  const firstParam =
+    Array.isArray(params) && params.length > 0 ? params[0] : 10;
+  const minutesRaw =
+    typeof firstParam === "number"
+      ? firstParam
+      : Number.parseInt(String(firstParam ?? 10), 10);
+  return Math.max(1, Math.floor((Number.isFinite(minutesRaw) ? minutesRaw : 10) * 60));
+}
+
+function parseNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const parsed = Number.parseFloat(String(value ?? ""));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function recalculateStartedAtFromTimer(
+  nowMs: number,
+  remainingSecsRaw: unknown,
+  totalSecsRaw: unknown,
+): number | null {
+  const remainingSecs = Math.max(0, parseNumber(remainingSecsRaw, -1));
+  const totalSecs = Math.max(1, parseNumber(totalSecsRaw, -1));
+  if (remainingSecs < 0 || totalSecs <= 0) {
+    return null;
+  }
+  const elapsedSecs = Math.max(0, totalSecs - remainingSecs);
+  return Math.max(0, Math.floor(nowMs - elapsedSecs * 1000));
 }
 
 function validateSessionIdentity(
@@ -842,9 +875,13 @@ export function setupWebSocket(server: http.Server) {
 
           const members = roomManager.getRoomMembers(roomId);
           const chatHistory = roomRepo.getRecentRoomChatMessages(roomId, 100);
+          const dbActiveGamemode: ActiveGamemodePayload | null =
+            parseDbActiveGamemode(dbRoom);
           const activeGamemodePayload: ActiveGamemodePayload | null =
-            updatedRoom.activeGamemode === null
-              ? parseDbActiveGamemode(dbRoom)
+            dbActiveGamemode !== null
+              ? dbActiveGamemode
+              : updatedRoom.activeGamemode === null
+                ? null
               : {
                   index: updatedRoom.activeGamemode.index,
                   params: updatedRoom.activeGamemode.params,
@@ -1262,10 +1299,41 @@ export function setupWebSocket(server: http.Server) {
               Array.isArray(paramsRaw) ? paramsRaw : [],
               Array.isArray(modsRaw) ? modsRaw : [],
               startedAtMs,
+              totalGamemodeSecondsFromParams(
+                Array.isArray(paramsRaw) ? paramsRaw : [],
+              ),
             );
           } else if (method === "remote_end_gamemode" && senderIsHost) {
             roomManager.clearActiveGamemode(room.id);
             roomRepo.clearActiveGamemodeState(room.id);
+          } else if (method === "remote_gamemode_timer_sync" && senderIsHost) {
+            const remainingRaw = Array.isArray(args) ? args[1] : undefined;
+            const totalRaw = Array.isArray(args) ? args[2] : undefined;
+            const startedAtMs = recalculateStartedAtFromTimer(
+              Date.now(),
+              remainingRaw,
+              totalRaw,
+            );
+            if (startedAtMs !== null) {
+              const active = room.activeGamemode;
+              if (active !== null) {
+                roomManager.setActiveGamemode(
+                  room.id,
+                  active.index,
+                  Array.isArray(active.params) ? active.params : [],
+                  Array.isArray(active.mods) ? active.mods : [],
+                  startedAtMs,
+                );
+                roomRepo.setActiveGamemodeState(
+                  room.id,
+                  active.index,
+                  Array.isArray(active.params) ? active.params : [],
+                  Array.isArray(active.mods) ? active.mods : [],
+                  startedAtMs,
+                  Math.max(1, Math.ceil(parseNumber(remainingRaw, 0))),
+                );
+              }
+            }
           } else if (method === "remote_gamemode_menu_sync" && senderIsHost) {
             const idxRaw = Array.isArray(args) ? args[0] : undefined;
             const paramsRaw = Array.isArray(args) ? args[1] : [];

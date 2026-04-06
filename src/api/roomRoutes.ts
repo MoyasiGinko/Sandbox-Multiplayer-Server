@@ -17,7 +17,10 @@ async function syncRegistryRoomStateNow(): Promise<void> {
     (sum, room) => sum + room.current_players,
     0,
   );
-  const maxPlayers = activeRooms.reduce((sum, room) => sum + room.max_players, 0);
+  const maxPlayers = activeRooms.reduce(
+    (sum, room) => sum + room.max_players,
+    0,
+  );
   const currentRooms = roomRepo.countActiveRooms();
 
   try {
@@ -31,7 +34,9 @@ async function syncRegistryRoomStateNow(): Promise<void> {
   }
 }
 
-async function resolveAuthoritativeCapacityForCreate(activeRoomCount: number): Promise<{
+async function resolveAuthoritativeCapacityForCreate(
+  activeRoomCount: number,
+): Promise<{
   maxRooms: number | null;
   authoritativeCurrentRooms: number;
 }> {
@@ -39,7 +44,10 @@ async function resolveAuthoritativeCapacityForCreate(activeRoomCount: number): P
   try {
     capacity = await refreshServerRoomCapacity();
   } catch (error) {
-    console.warn("[RoomAPI] ⚠️ Failed to refresh room capacity from Django:", error);
+    console.warn(
+      "[RoomAPI] ⚠️ Failed to refresh room capacity from Django:",
+      error,
+    );
   }
 
   return {
@@ -52,7 +60,7 @@ async function resolveAuthoritativeCapacityForCreate(activeRoomCount: number): P
 // Create a new room (requires authentication)
 router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { gamemode, mapName, maxPlayers, isPublic } = req.body;
+    const { gamemode, mapName, maxPlayers, isPublic, server_id } = req.body;
     const userId = req.user?.userId;
     const username = req.user?.username;
 
@@ -70,6 +78,7 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
       " Public: ",
       isPublic,
     );
+    console.log("[RoomAPI] 🧭 Requested server_id:", server_id ?? "(none)");
 
     // Validate required fields
     if (!gamemode) {
@@ -85,9 +94,11 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
     }
 
     const activeRoomCount = roomRepo.countActiveRooms();
-    const capacity = await resolveAuthoritativeCapacityForCreate(activeRoomCount);
+    const capacity =
+      await resolveAuthoritativeCapacityForCreate(activeRoomCount);
 
-    if (capacity.maxRooms === null) {
+    const capacityKnown = capacity.maxRooms !== null;
+    if (!capacityKnown) {
       res.status(503).json({
         error: "room_capacity_unavailable",
         message: "Server room capacity is unavailable. Please try again shortly.",
@@ -95,7 +106,10 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    if (capacity.authoritativeCurrentRooms >= capacity.maxRooms) {
+    if (
+      capacityKnown &&
+      capacity.authoritativeCurrentRooms >= (capacity.maxRooms as number)
+    ) {
       console.log(
         "[RoomAPI] ❌ Room capacity reached:",
         capacity.authoritativeCurrentRooms,
@@ -170,7 +184,11 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
       server_capacity: {
         current_rooms: capacity.authoritativeCurrentRooms,
         max_rooms: capacity.maxRooms,
-        can_create_room: capacity.authoritativeCurrentRooms < capacity.maxRooms,
+        can_create_room:
+          capacity.maxRooms === null
+            ? false
+            : capacity.authoritativeCurrentRooms < capacity.maxRooms,
+        capacity_source: capacityKnown ? "registry" : "degraded_local",
       },
     });
   } catch (error) {
@@ -208,7 +226,10 @@ router.get("/", async (req: Request, res: Response) => {
     try {
       capacity = await refreshServerRoomCapacity();
     } catch (error) {
-      console.warn("[RoomAPI] ⚠️ Failed to refresh room capacity for list:", error);
+      console.warn(
+        "[RoomAPI] ⚠️ Failed to refresh room capacity for list:",
+        error,
+      );
     }
 
     const currentRooms = roomRepo.countActiveRooms();
