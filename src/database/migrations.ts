@@ -81,6 +81,7 @@ export function runMigrations(): void {
             active_gamemode_mods TEXT,
             active_gamemode_started_at_ms INTEGER,
             active_gamemode_remaining_secs INTEGER,
+            active_gamemode_running INTEGER DEFAULT 0,
             max_players INTEGER DEFAULT 8,
             current_players INTEGER DEFAULT 0,
             is_public BOOLEAN DEFAULT 1,
@@ -159,6 +160,24 @@ export function runMigrations(): void {
     console.log(
       "✅ Added active_gamemode_remaining_secs column to rooms table",
     );
+  }
+
+  const hasActiveGamemodeRunning = roomColumns.some(
+    (col: any) => col.name === "active_gamemode_running",
+  );
+  if (!hasActiveGamemodeRunning) {
+    db.exec(`
+      ALTER TABLE rooms
+      ADD COLUMN active_gamemode_running INTEGER DEFAULT 0
+    `);
+    db.exec(`
+      UPDATE rooms
+      SET active_gamemode_running = CASE
+        WHEN active_gamemode_index IS NOT NULL THEN 1
+        ELSE 0
+      END
+    `);
+    console.log("✅ Added active_gamemode_running column to rooms table");
   }
 
   const hasSelectedGamemodeIndex = roomColumns.some(

@@ -221,6 +221,9 @@ function parseDbActiveGamemode(
   if (!dbRoom) {
     return null;
   }
+  if ((dbRoom.active_gamemode_running ?? 0) !== 1) {
+    return null;
+  }
   if (
     dbRoom.active_gamemode_index === null ||
     dbRoom.active_gamemode_started_at_ms === null
@@ -1416,6 +1419,7 @@ export function setupWebSocket(server: http.Server) {
               totalGamemodeSecondsFromParams(
                 Array.isArray(paramsRaw) ? paramsRaw : [],
               ),
+              true,
             );
           } else if (method === "remote_end_gamemode" && senderIsHost) {
             const active = room.activeGamemode;
@@ -1466,6 +1470,7 @@ export function setupWebSocket(server: http.Server) {
                   Array.isArray(active.mods) ? active.mods : [],
                   startedAtMs,
                   Math.max(1, Math.ceil(parseNumber(remainingRaw, 0))),
+                  true,
                 );
               }
             }
