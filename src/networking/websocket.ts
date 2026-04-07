@@ -255,11 +255,10 @@ function parseDbActiveGamemode(
     params,
     mods,
     startedAtMs: dbRoom.active_gamemode_started_at_ms,
-    remainingSecs:
-      typeof dbRoom.active_gamemode_remaining_secs === "number" &&
-      dbRoom.active_gamemode_remaining_secs >= 0
-        ? Math.max(1, Math.floor(dbRoom.active_gamemode_remaining_secs))
-        : calculateRemainingSecs(dbRoom.active_gamemode_started_at_ms, params),
+    remainingSecs: calculateRemainingSecs(
+      dbRoom.active_gamemode_started_at_ms,
+      params,
+    ),
   };
 }
 
