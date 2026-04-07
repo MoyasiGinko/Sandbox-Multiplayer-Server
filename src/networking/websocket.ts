@@ -392,6 +392,13 @@ function parseNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function safeString(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return fallback;
+}
+
 function recalculateStartedAtFromTimer(
   nowMs: number,
   remainingSecsRaw: unknown,
@@ -1505,6 +1512,12 @@ export function setupWebSocket(server: http.Server) {
             }
           } else if (method === "remote_end_gamemode" && senderIsHost) {
             const active = room.activeGamemode;
+            const reportPayloadRaw =
+              Array.isArray(args) && args.length > 0 ? args[0] : null;
+            const reportPayload =
+              reportPayloadRaw && typeof reportPayloadRaw === "object"
+                ? (reportPayloadRaw as Record<string, unknown>)
+                : null;
             if (active !== null) {
               const startedAtMs = toSafeMs(active.startedAtMs);
               const endedAtMs = Date.now();
@@ -1524,10 +1537,147 @@ export function setupWebSocket(server: http.Server) {
                 endedAtMs,
                 durationSeconds,
               });
+
+              if (reportPayload) {
+                const gamemode = safeString(
+                  reportPayload.gamemode,
+                  roomRepo.getRoomById(room.id)?.gamemode || "unknown",
+                );
+                const durationFromPayload = Math.max(
+                  0,
+                  Math.floor(
+                    parseNumber(
+                      reportPayload.duration_seconds,
+                      durationSeconds,
+                    ),
+                  ),
+                );
+                const winnerPeerIdRaw = reportPayload.winner_peer_id;
+                const winnerPeerId =
+                  typeof winnerPeerIdRaw === "number"
+                    ? winnerPeerIdRaw
+                    : typeof winnerPeerIdRaw === "string"
+                      ? Number.parseInt(winnerPeerIdRaw, 10)
+                      : NaN;
+                const winnerUserId = Number.isInteger(winnerPeerId)
+                  ? (room.clients.get(winnerPeerId)?.userId ?? null)
+                  : null;
+
+                const leaderboardRaw = Array.isArray(reportPayload.leaderboard)
+                  ? reportPayload.leaderboard
+                  : [];
+                const players: MatchPlayerReport[] = [];
+                for (const entry of leaderboardRaw) {
+                  if (!entry || typeof entry !== "object") {
+                    continue;
+                  }
+                  const payloadEntry = entry as Record<string, unknown>;
+                  const peerIdRaw = payloadEntry.peer_id;
+                  const peerId =
+                    typeof peerIdRaw === "number"
+                      ? peerIdRaw
+                      : typeof peerIdRaw === "string"
+                        ? Number.parseInt(peerIdRaw, 10)
+                        : NaN;
+                  if (!Number.isInteger(peerId)) {
+                    continue;
+                  }
+                  const member = room.clients.get(peerId);
+                  const userId = member?.userId ?? -1;
+                  if (!Number.isInteger(userId) || userId <= 0) {
+                    continue;
+                  }
+                  players.push({
+                    user_id: userId,
+                    kills: Math.max(
+                      0,
+                      Number.parseInt(String(payloadEntry.kills ?? 0), 10) || 0,
+                    ),
+                    deaths: Math.max(
+                      0,
+                      Number.parseInt(String(payloadEntry.deaths ?? 0), 10) ||
+                        0,
+                    ),
+                    playtime_seconds: Math.max(
+                      0,
+                      Number.parseInt(
+                        String(payloadEntry.playtime_seconds ?? 0),
+                        10,
+                      ) || durationFromPayload,
+                    ),
+                    won: Boolean(payloadEntry.won),
+                  });
+                }
+
+                if (players.length > 0) {
+                  const localMatchHistoryId = roomRepo.addRoomMatchHistory({
+                    roomId: room.id,
+                    gamemode,
+                    winnerUserId:
+                      winnerUserId &&
+                      Number.isInteger(winnerUserId) &&
+                      winnerUserId > 0
+                        ? winnerUserId
+                        : null,
+                    durationSeconds: durationFromPayload,
+                  });
+                  roomRepo.addRoomMatchParticipants(
+                    localMatchHistoryId,
+                    players,
+                  );
+
+                  const transferToken =
+                    session.accessToken ?? findAccessTokenForRoom(room.id);
+                  if (transferToken) {
+                    void reportMatchToDjango(transferToken, {
+                      room_id: room.id,
+                      gamemode,
+                      winner_user_id:
+                        winnerUserId &&
+                        Number.isInteger(winnerUserId) &&
+                        winnerUserId > 0
+                          ? winnerUserId
+                          : null,
+                      duration_seconds: durationFromPayload,
+                      players,
+                    })
+                      .then((result) => {
+                        roomRepo.markRoomMatchHistoryTransferred(
+                          localMatchHistoryId,
+                          typeof result.match_id === "number"
+                            ? result.match_id
+                            : null,
+                        );
+                        logInfo(
+                          `gamemode_end match_result persisted: roomId=${room.id} matchId=${result.match_id ?? "n/a"} players=${players.length}`,
+                        );
+                      })
+                      .catch((error: unknown) => {
+                        const errorMessage =
+                          error instanceof Error
+                            ? error.message
+                            : String(error);
+                        roomRepo.markRoomMatchHistoryTransferFailed(
+                          localMatchHistoryId,
+                          errorMessage,
+                        );
+                        logWarning(
+                          `gamemode_end match_result transfer failed for roomId=${room.id}: ${errorMessage}`,
+                        );
+                      });
+                  } else {
+                    roomRepo.markRoomMatchHistoryTransferFailed(
+                      localMatchHistoryId,
+                      "No authenticated access token available for Django transfer",
+                    );
+                  }
+                }
+              }
             }
             roomManager.clearActiveGamemode(room.id);
             roomRepo.clearActiveGamemodeState(room.id);
             roomTimerLabels.delete(room.id);
+            forwardedArgs = [];
           } else if (method === "remote_gamemode_timer_sync" && senderIsHost) {
             const label = String(args[0] ?? "Gamemode");
             if (label.trim().length > 0) {
