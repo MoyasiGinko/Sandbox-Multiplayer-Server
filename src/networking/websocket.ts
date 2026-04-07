@@ -16,6 +16,7 @@ type ClientSession = {
   ws: WebSocket;
   peerId: number | null;
   roomId: string | null;
+  joinedRoomAtMs: number | null;
   username: string;
   name: string;
   version: string;
@@ -243,6 +244,7 @@ function validateJson(raw: string): Message | null {
 
 function parseDbActiveGamemode(
   dbRoom: ReturnType<RoomRepository["getRoomById"]>,
+  atMs?: number,
 ): ActiveGamemodePayload | null {
   if (!dbRoom) {
     return null;
@@ -281,9 +283,10 @@ function parseDbActiveGamemode(
     params,
     mods,
     startedAtMs: dbRoom.active_gamemode_started_at_ms,
-    remainingSecs: calculateRemainingSecs(
+    remainingSecs: calculateRemainingSecsAt(
       dbRoom.active_gamemode_started_at_ms,
       params,
+      atMs,
     ),
   };
 }
@@ -323,6 +326,14 @@ function calculateRemainingSecs(
   startedAtMs: number,
   params: unknown[],
 ): number {
+  return calculateRemainingSecsAt(startedAtMs, params);
+}
+
+function calculateRemainingSecsAt(
+  startedAtMs: number,
+  params: unknown[],
+  atMs?: number,
+): number {
   const firstParam =
     Array.isArray(params) && params.length > 0 ? params[0] : 10;
   const minutesRaw =
@@ -333,7 +344,10 @@ function calculateRemainingSecs(
     1,
     Math.floor((Number.isFinite(minutesRaw) ? minutesRaw : 10) * 60),
   );
-  const nowMs = Date.now();
+  const nowMs =
+    typeof atMs === "number" && Number.isFinite(atMs) && atMs > 0
+      ? Math.floor(atMs)
+      : Date.now();
   const elapsedSecs = Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
   return Math.max(1, totalSecs - elapsedSecs);
 }
@@ -569,6 +583,7 @@ export function setupWebSocket(server: http.Server) {
       ws,
       peerId: null,
       roomId: null,
+      joinedRoomAtMs: null,
       username: "",
       name: "",
       version: "",
@@ -978,6 +993,7 @@ export function setupWebSocket(server: http.Server) {
           session.username = identity.username;
           session.version = version;
           session.roomId = roomId;
+          session.joinedRoomAtMs = Date.now();
           activeUserRoomLocks.set(identity.userId, { roomId, ws });
 
           console.log(
@@ -1003,10 +1019,11 @@ export function setupWebSocket(server: http.Server) {
 
           // Player count already updated by addPlayerSession, no need to update again
 
+          const roomJoinAtMs = session.joinedRoomAtMs ?? Date.now();
           const members = roomManager.getRoomMembers(roomId);
           const chatHistory = roomRepo.getRecentRoomChatMessages(roomId, 100);
           const dbActiveGamemode: ActiveGamemodePayload | null =
-            parseDbActiveGamemode(dbRoom);
+            parseDbActiveGamemode(dbRoom, roomJoinAtMs);
           const activeGamemodePayload: ActiveGamemodePayload | null =
             dbActiveGamemode !== null
               ? dbActiveGamemode
@@ -1017,9 +1034,10 @@ export function setupWebSocket(server: http.Server) {
                     params: updatedRoom.activeGamemode.params,
                     mods: updatedRoom.activeGamemode.mods,
                     startedAtMs: updatedRoom.activeGamemode.startedAtMs,
-                    remainingSecs: calculateRemainingSecs(
+                    remainingSecs: calculateRemainingSecsAt(
                       updatedRoom.activeGamemode.startedAtMs,
                       updatedRoom.activeGamemode.params,
+                      roomJoinAtMs,
                     ),
                   };
           const selectedGamemodePayload: SelectedGamemodePayload | null =
@@ -1415,6 +1433,7 @@ export function setupWebSocket(server: http.Server) {
           const argsRaw = (msg.data as any)?.args;
           const args: unknown[] = Array.isArray(argsRaw) ? argsRaw : [];
           let forwardedArgs: unknown[] = args;
+          let shouldRelay = true;
 
           const sender = room.clients.get(session.peerId);
           const senderIsHost = Boolean(sender?.isHost);
@@ -1513,6 +1532,8 @@ export function setupWebSocket(server: http.Server) {
             if (authoritativeRemaining !== null && authoritativeMax !== null) {
               forwardedArgs = [label, authoritativeRemaining, authoritativeMax];
             }
+            // DB timer loop is the single source of countdown broadcasts.
+            shouldRelay = false;
           } else if (method === "remote_gamemode_menu_sync" && senderIsHost) {
             const idxRaw = Array.isArray(args) ? args[0] : undefined;
             const paramsRaw = Array.isArray(args) ? args[1] : [];
@@ -1536,6 +1557,10 @@ export function setupWebSocket(server: http.Server) {
             logInfo(
               `[WS] 🔧 rpc_call ${method} from peer ${session.peerId} to ${targetPeer === 0 ? "ALL" : targetPeer}, args: ${JSON.stringify(args)}`,
             );
+          }
+
+          if (!shouldRelay) {
+            break;
           }
 
           if (targetPeer === 0) {
