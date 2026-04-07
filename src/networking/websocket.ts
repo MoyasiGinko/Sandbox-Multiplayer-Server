@@ -32,6 +32,7 @@ type ActiveGamemodePayload = {
   mods: unknown[];
   startedAtMs: number;
   remainingSecs: number;
+  serverNowMs: number;
 };
 
 type SelectedGamemodePayload = {
@@ -55,9 +56,10 @@ let _roomTimerSyncLoopStarted = false;
 const roomTimerLabels = new Map<string, string>();
 
 function broadcastDbAuthoritativeTimerTicks(): void {
+  const nowMs = Date.now();
   const activeRooms = roomRepo.getAllActiveRooms();
   for (const dbRoom of activeRooms) {
-    const active = parseDbActiveGamemode(dbRoom);
+    const active = parseDbActiveGamemode(dbRoom, nowMs);
     if (active === null) {
       continue;
     }
@@ -66,12 +68,16 @@ function broadcastDbAuthoritativeTimerTicks(): void {
       continue;
     }
     const label = roomTimerLabels.get(dbRoom.id) ?? "Gamemode";
-    const remaining = calculateRemainingSecs(active.startedAtMs, active.params);
+    const remaining = calculateRemainingSecsAt(
+      active.startedAtMs,
+      active.params,
+      nowMs,
+    );
     const maxTime = totalGamemodeSecondsFromParams(active.params);
     const rpcData = {
       fromPeer: room.hostPeerId,
       method: "remote_gamemode_timer_sync",
-      args: [label, remaining, maxTime],
+      args: [label, remaining, maxTime, nowMs, active.startedAtMs],
     };
     broadcast(room, "rpc_call", rpcData);
   }
@@ -278,6 +284,11 @@ function parseDbActiveGamemode(
     mods = [];
   }
 
+  const referenceMs =
+    typeof atMs === "number" && Number.isFinite(atMs) && atMs > 0
+      ? Math.floor(atMs)
+      : Date.now();
+
   return {
     index: dbRoom.active_gamemode_index,
     params,
@@ -286,8 +297,9 @@ function parseDbActiveGamemode(
     remainingSecs: calculateRemainingSecsAt(
       dbRoom.active_gamemode_started_at_ms,
       params,
-      atMs,
+      referenceMs,
     ),
+    serverNowMs: referenceMs,
   };
 }
 
@@ -1039,6 +1051,7 @@ export function setupWebSocket(server: http.Server) {
                       updatedRoom.activeGamemode.params,
                       roomJoinAtMs,
                     ),
+                    serverNowMs: roomJoinAtMs,
                   };
           const selectedGamemodePayload: SelectedGamemodePayload | null =
             parseDbSelectedGamemode(dbRoom);
@@ -1469,6 +1482,24 @@ export function setupWebSocket(server: http.Server) {
               ),
               true,
             );
+            const serverNowMs = Date.now();
+            const normalizedParams = Array.isArray(paramsRaw) ? paramsRaw : [];
+            const normalizedMods = Array.isArray(modsRaw) ? modsRaw : [];
+            const totalSecs = totalGamemodeSecondsFromParams(normalizedParams);
+            const remainingSecs = calculateRemainingSecsAt(
+              startedAtMs,
+              normalizedParams,
+              serverNowMs,
+            );
+            forwardedArgs = [
+              idx,
+              normalizedParams,
+              normalizedMods,
+              startedAtMs,
+              remainingSecs,
+              serverNowMs,
+              totalSecs,
+            ];
             if (typeof labelRaw === "string" && labelRaw.trim().length > 0) {
               roomTimerLabels.set(room.id, labelRaw);
             }
