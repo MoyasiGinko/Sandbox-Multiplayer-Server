@@ -250,6 +250,55 @@ router.get("/", async (req: Request, res: Response) => {
   }
 });
 
+// Read recent match history (fallback for clients when Django history endpoint is unavailable)
+router.get("/matches/history", async (req: Request, res: Response) => {
+  try {
+    const limitRaw = req.query.limit;
+    const limit =
+      typeof limitRaw === "string"
+        ? Math.max(1, Math.min(Number.parseInt(limitRaw, 10) || 50, 200))
+        : 50;
+
+    const matches = roomRepo.getRecentRoomMatchHistory(limit).map((match) => {
+      const participants = roomRepo
+        .getRoomMatchParticipants(match.id)
+        .map((p) => ({
+          user_id: p.user_id,
+          username: `User ${p.user_id}`,
+          kills: p.kills,
+          deaths: p.deaths,
+          playtime_seconds: p.playtime_seconds,
+          won: p.won > 0,
+        }));
+
+      return {
+        id: match.id,
+        room_id: match.room_id,
+        gamemode: match.gamemode,
+        winner_user_id: match.winner_user_id,
+        winner_name:
+          match.winner_user_id !== null
+            ? `User ${match.winner_user_id}`
+            : "N/A",
+        duration_seconds: match.duration_seconds,
+        created_at: match.created_at,
+        transferred_to_django: match.transferred_to_django,
+        django_match_id: match.django_match_id,
+        players: participants,
+      };
+    });
+
+    res.json({
+      count: matches.length,
+      matches,
+      source: "node-room-history",
+    });
+  } catch (error) {
+    console.error("[RoomAPI] ❌ ERROR fetching match history:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Get specific room details
 router.get("/:id", async (req: Request, res: Response) => {
   try {

@@ -221,6 +221,18 @@ export class RoomRepository {
     return stmt.all(matchHistoryId) as RoomMatchParticipantEntry[];
   }
 
+  getRecentRoomMatchHistory(limit: number = 50): RoomMatchHistoryEntry[] {
+    const safeLimit = Math.max(1, Math.min(limit, 200));
+    const stmt = this.db.prepare(`
+      SELECT id, room_id, gamemode, winner_user_id, duration_seconds, transferred_to_django,
+             django_match_id, last_transfer_error, created_at
+      FROM room_match_history
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+    return stmt.all(safeLimit) as RoomMatchHistoryEntry[];
+  }
+
   addRoomGamemodeHistory(input: {
     roomId: string;
     gamemodeIndex: number;
