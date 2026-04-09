@@ -166,7 +166,7 @@ export class RoomRepository {
         playtime_seconds,
         won
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMany = this.db.transaction(
       (
