@@ -62,6 +62,10 @@ export interface RoomMatchHistoryEntry {
   room_id: string;
   gamemode: string;
   winner_user_id: number | null;
+  winner_type: string | null;
+  winner_team: string | null;
+  game_started_at_ms: number | null;
+  game_ended_at_ms: number | null;
   duration_seconds: number;
   transferred_to_django: number;
   django_match_id: number | null;
@@ -73,8 +77,12 @@ export interface RoomMatchParticipantEntry {
   id: number;
   match_history_id: number;
   user_id: number;
+  username: string | null;
+  display_name: string | null;
+  team: string | null;
   kills: number;
   deaths: number;
+  score: number;
   playtime_seconds: number;
   won: number;
 }
@@ -99,6 +107,10 @@ export class RoomRepository {
     roomId: string;
     gamemode: string;
     winnerUserId: number | null;
+    winnerType?: string | null;
+    winnerTeam?: string | null;
+    gameStartedAtMs?: number | null;
+    gameEndedAtMs?: number | null;
     durationSeconds: number;
   }): number {
     const stmt = this.db.prepare(`
@@ -106,14 +118,22 @@ export class RoomRepository {
         room_id,
         gamemode,
         winner_user_id,
+        winner_type,
+        winner_team,
+        game_started_at_ms,
+        game_ended_at_ms,
         duration_seconds
       )
-      VALUES (?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       input.roomId,
       input.gamemode,
       input.winnerUserId,
+      input.winnerType ?? null,
+      input.winnerTeam ?? null,
+      input.gameStartedAtMs ?? null,
+      input.gameEndedAtMs ?? null,
       Math.max(0, Math.floor(input.durationSeconds)),
     );
     return Number(result.lastInsertRowid);
@@ -123,8 +143,12 @@ export class RoomRepository {
     matchHistoryId: number,
     players: Array<{
       user_id: number;
+      username?: string;
+      display_name?: string;
+      team?: string;
       kills?: number;
       deaths?: number;
+      score?: number;
       playtime_seconds?: number;
       won?: boolean;
     }>,
@@ -133,29 +157,44 @@ export class RoomRepository {
       INSERT INTO room_match_participants (
         match_history_id,
         user_id,
+        username,
+        display_name,
+        team,
         kills,
         deaths,
+        score,
         playtime_seconds,
         won
       )
-      VALUES (?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMany = this.db.transaction(
       (
         participants: Array<{
           user_id: number;
+          username?: string;
+          display_name?: string;
+          team?: string;
           kills?: number;
           deaths?: number;
+          score?: number;
           playtime_seconds?: number;
           won?: boolean;
         }>,
       ) => {
         for (const player of participants) {
+          const username = String(player.username ?? "").trim();
+          const displayName = String(player.display_name ?? "").trim();
+          const team = String(player.team ?? "").trim();
           stmt.run(
             matchHistoryId,
             player.user_id,
+            username.length > 0 ? username : null,
+            displayName.length > 0 ? displayName : null,
+            team.length > 0 ? team : null,
             Math.max(0, Number.parseInt(String(player.kills ?? 0), 10) || 0),
             Math.max(0, Number.parseInt(String(player.deaths ?? 0), 10) || 0),
+            Math.max(0, Number.parseInt(String(player.score ?? 0), 10) || 0),
             Math.max(
               0,
               Number.parseInt(String(player.playtime_seconds ?? 0), 10) || 0,
@@ -213,7 +252,8 @@ export class RoomRepository {
     matchHistoryId: number,
   ): RoomMatchParticipantEntry[] {
     const stmt = this.db.prepare(`
-      SELECT id, match_history_id, user_id, kills, deaths, playtime_seconds, won
+      SELECT id, match_history_id, user_id, username, display_name, team,
+             kills, deaths, score, playtime_seconds, won
       FROM room_match_participants
       WHERE match_history_id = ?
       ORDER BY id ASC
@@ -224,7 +264,8 @@ export class RoomRepository {
   getRecentRoomMatchHistory(limit: number = 50): RoomMatchHistoryEntry[] {
     const safeLimit = Math.max(1, Math.min(limit, 200));
     const stmt = this.db.prepare(`
-      SELECT id, room_id, gamemode, winner_user_id, duration_seconds, transferred_to_django,
+      SELECT id, room_id, gamemode, winner_user_id, winner_type, winner_team,
+             game_started_at_ms, game_ended_at_ms, duration_seconds, transferred_to_django,
              django_match_id, last_transfer_error, created_at
       FROM room_match_history
       ORDER BY id DESC

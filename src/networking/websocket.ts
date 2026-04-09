@@ -10,6 +10,13 @@ import {
   MatchPlayerReport,
 } from "../integration/djangoMatchReporter";
 
+type LocalMatchPlayerReport = MatchPlayerReport & {
+  username?: string;
+  display_name?: string;
+  team?: string;
+  score?: number;
+};
+
 type Message = { type: string; data?: unknown };
 
 type ClientSession = {
@@ -1518,6 +1525,9 @@ export function setupWebSocket(server: http.Server) {
               reportPayloadRaw && typeof reportPayloadRaw === "object"
                 ? (reportPayloadRaw as Record<string, unknown>)
                 : null;
+            logInfo(
+              `gamemode_end received: roomId=${room.id} hasReport=${reportPayload !== null}`,
+            );
             if (active !== null) {
               const startedAtMs = toSafeMs(active.startedAtMs);
               const endedAtMs = Date.now();
@@ -1552,6 +1562,8 @@ export function setupWebSocket(server: http.Server) {
                     ),
                   ),
                 );
+                const winnerType = safeString(reportPayload.winner_type, "");
+                const winnerTeam = safeString(reportPayload.winner_team, "");
                 const winnerPeerIdRaw = reportPayload.winner_peer_id;
                 const winnerPeerId =
                   typeof winnerPeerIdRaw === "number"
@@ -1566,7 +1578,10 @@ export function setupWebSocket(server: http.Server) {
                 const leaderboardRaw = Array.isArray(reportPayload.leaderboard)
                   ? reportPayload.leaderboard
                   : [];
-                const players: MatchPlayerReport[] = [];
+                logInfo(
+                  `gamemode_end report payload: roomId=${room.id} leaderboard_entries=${leaderboardRaw.length}`,
+                );
+                const players: LocalMatchPlayerReport[] = [];
                 for (const entry of leaderboardRaw) {
                   if (!entry || typeof entry !== "object") {
                     continue;
@@ -1587,8 +1602,31 @@ export function setupWebSocket(server: http.Server) {
                   if (!Number.isInteger(userId) || userId <= 0) {
                     continue;
                   }
+                  const payloadDisplayName = safeString(
+                    payloadEntry.display_name,
+                    "",
+                  );
+                  const payloadUsername = safeString(payloadEntry.username, "");
+                  const participantSession = Array.from(
+                    clientSessions.values(),
+                  ).find((s) => s.roomId === room.id && s.peerId === peerId);
+                  const sessionUsername =
+                    participantSession?.username?.trim() ?? "";
+                  const resolvedDisplayName =
+                    payloadDisplayName.trim().length > 0
+                      ? payloadDisplayName
+                      : (member?.name ?? "").trim();
+                  const resolvedUsername =
+                    payloadUsername.trim().length > 0
+                      ? payloadUsername
+                      : sessionUsername.length > 0
+                        ? sessionUsername
+                        : resolvedDisplayName;
                   players.push({
                     user_id: userId,
+                    username: resolvedUsername,
+                    display_name: resolvedDisplayName,
+                    team: safeString(payloadEntry.team, "Default"),
                     kills: Math.max(
                       0,
                       Number.parseInt(String(payloadEntry.kills ?? 0), 10) || 0,
@@ -1597,6 +1635,17 @@ export function setupWebSocket(server: http.Server) {
                       0,
                       Number.parseInt(String(payloadEntry.deaths ?? 0), 10) ||
                         0,
+                    ),
+                    score: Math.max(
+                      0,
+                      Number.parseInt(String(payloadEntry.score ?? 0), 10) ||
+                        Math.max(
+                          0,
+                          Number.parseInt(
+                            String(payloadEntry.kills ?? 0),
+                            10,
+                          ) || 0,
+                        ),
                     ),
                     playtime_seconds: Math.max(
                       0,
@@ -1609,6 +1658,10 @@ export function setupWebSocket(server: http.Server) {
                   });
                 }
 
+                logInfo(
+                  `gamemode_end mapped participants: roomId=${room.id} players_mapped=${players.length}`,
+                );
+
                 if (players.length > 0) {
                   const localMatchHistoryId = roomRepo.addRoomMatchHistory({
                     roomId: room.id,
@@ -1619,6 +1672,13 @@ export function setupWebSocket(server: http.Server) {
                       winnerUserId > 0
                         ? winnerUserId
                         : null,
+                    winnerType: winnerType.length > 0 ? winnerType : null,
+                    winnerTeam:
+                      winnerType === "team" && winnerTeam.length > 0
+                        ? winnerTeam
+                        : null,
+                    gameStartedAtMs: startedAtMs,
+                    gameEndedAtMs: endedAtMs,
                     durationSeconds: durationFromPayload,
                   });
                   roomRepo.addRoomMatchParticipants(
@@ -1629,6 +1689,9 @@ export function setupWebSocket(server: http.Server) {
                   const transferToken =
                     session.accessToken ?? findAccessTokenForRoom(room.id);
                   if (transferToken) {
+                    logInfo(
+                      `gamemode_end transferring to django: roomId=${room.id} players=${players.length}`,
+                    );
                     void reportMatchToDjango(transferToken, {
                       room_id: room.id,
                       gamemode,
@@ -1666,11 +1729,18 @@ export function setupWebSocket(server: http.Server) {
                         );
                       });
                   } else {
+                    logWarning(
+                      `gamemode_end transfer skipped: roomId=${room.id} no transfer token`,
+                    );
                     roomRepo.markRoomMatchHistoryTransferFailed(
                       localMatchHistoryId,
                       "No authenticated access token available for Django transfer",
                     );
                   }
+                } else {
+                  logWarning(
+                    `gamemode_end report ignored: roomId=${room.id} no mappable players in payload`,
+                  );
                 }
               }
             }

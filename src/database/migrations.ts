@@ -263,6 +263,10 @@ export function runMigrations(): void {
           room_id TEXT NOT NULL,
           gamemode TEXT NOT NULL,
           winner_user_id INTEGER,
+          winner_type TEXT,
+          winner_team TEXT,
+          game_started_at_ms INTEGER,
+          game_ended_at_ms INTEGER,
           duration_seconds INTEGER NOT NULL,
           transferred_to_django INTEGER NOT NULL DEFAULT 0,
           django_match_id INTEGER,
@@ -278,13 +282,115 @@ export function runMigrations(): void {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           match_history_id INTEGER NOT NULL,
           user_id INTEGER NOT NULL,
+          username TEXT,
+          display_name TEXT,
+          team TEXT,
           kills INTEGER NOT NULL DEFAULT 0,
           deaths INTEGER NOT NULL DEFAULT 0,
+          score INTEGER NOT NULL DEFAULT 0,
           playtime_seconds INTEGER NOT NULL DEFAULT 0,
           won INTEGER NOT NULL DEFAULT 0,
           FOREIGN KEY (match_history_id) REFERENCES room_match_history(id) ON DELETE CASCADE
         )
       `);
+
+  const roomMatchHistoryColumns = db
+    .prepare("PRAGMA table_info(room_match_history)")
+    .all();
+  const hasWinnerType = roomMatchHistoryColumns.some(
+    (col: any) => col.name === "winner_type",
+  );
+  if (!hasWinnerType) {
+    db.exec(`
+      ALTER TABLE room_match_history
+      ADD COLUMN winner_type TEXT
+    `);
+    console.log("✅ Added winner_type column to room_match_history table");
+  }
+
+  const hasWinnerTeam = roomMatchHistoryColumns.some(
+    (col: any) => col.name === "winner_team",
+  );
+  if (!hasWinnerTeam) {
+    db.exec(`
+      ALTER TABLE room_match_history
+      ADD COLUMN winner_team TEXT
+    `);
+    console.log("✅ Added winner_team column to room_match_history table");
+  }
+
+  const hasGameStartedAtMs = roomMatchHistoryColumns.some(
+    (col: any) => col.name === "game_started_at_ms",
+  );
+  if (!hasGameStartedAtMs) {
+    db.exec(`
+      ALTER TABLE room_match_history
+      ADD COLUMN game_started_at_ms INTEGER
+    `);
+    console.log(
+      "✅ Added game_started_at_ms column to room_match_history table",
+    );
+  }
+
+  const hasGameEndedAtMs = roomMatchHistoryColumns.some(
+    (col: any) => col.name === "game_ended_at_ms",
+  );
+  if (!hasGameEndedAtMs) {
+    db.exec(`
+      ALTER TABLE room_match_history
+      ADD COLUMN game_ended_at_ms INTEGER
+    `);
+    console.log("✅ Added game_ended_at_ms column to room_match_history table");
+  }
+
+  const roomMatchParticipantColumns = db
+    .prepare("PRAGMA table_info(room_match_participants)")
+    .all();
+  const hasParticipantUsername = roomMatchParticipantColumns.some(
+    (col: any) => col.name === "username",
+  );
+  if (!hasParticipantUsername) {
+    db.exec(`
+      ALTER TABLE room_match_participants
+      ADD COLUMN username TEXT
+    `);
+    console.log("✅ Added username column to room_match_participants table");
+  }
+
+  const hasParticipantDisplayName = roomMatchParticipantColumns.some(
+    (col: any) => col.name === "display_name",
+  );
+  if (!hasParticipantDisplayName) {
+    db.exec(`
+      ALTER TABLE room_match_participants
+      ADD COLUMN display_name TEXT
+    `);
+    console.log(
+      "✅ Added display_name column to room_match_participants table",
+    );
+  }
+
+  const hasParticipantTeam = roomMatchParticipantColumns.some(
+    (col: any) => col.name === "team",
+  );
+  if (!hasParticipantTeam) {
+    db.exec(`
+      ALTER TABLE room_match_participants
+      ADD COLUMN team TEXT
+    `);
+    console.log("✅ Added team column to room_match_participants table");
+  }
+
+  const hasParticipantScore = roomMatchParticipantColumns.some(
+    (col: any) => col.name === "score",
+  );
+  if (!hasParticipantScore) {
+    db.exec(`
+      ALTER TABLE room_match_participants
+      ADD COLUMN score INTEGER NOT NULL DEFAULT 0
+    `);
+    console.log("✅ Added score column to room_match_participants table");
+  }
 
   // Keep only the newest session row per user, then enforce one active room per user.
   db.exec(`
