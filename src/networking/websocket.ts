@@ -627,1229 +627,1268 @@ export function setupWebSocket(server: http.Server) {
         return send(ws, "error", { reason: "bad_json" });
       }
 
-      switch (msg.type) {
-        case "handshake": {
-          // Handle authentication with JWT token
-          if (
-            !msg.data ||
-            typeof (msg.data as any).version !== "string" ||
-            typeof (msg.data as any).name !== "string"
-          ) {
-            return send(ws, "error", { reason: "invalid_handshake" });
-          }
-
-          const token = (msg.data as any).token;
-          if (token) {
-            // Verify JWT token
-            const user = await verifyTokenWithFallback(token);
-            if (user) {
-              session.userId = user.userId;
-              session.isAuthenticated = true;
-              session.accessToken = token;
-              session.username = user.username;
-              session.name =
-                user.display_name && user.display_name.trim().length > 0
-                  ? user.display_name
-                  : user.username;
-              logInfo(
-                `authenticated user: userId=${user.userId} username=${session.username}`,
-              );
-            } else {
-              return send(ws, "error", { reason: "invalid_token" });
+      try {
+        switch (msg.type) {
+          case "handshake": {
+            // Handle authentication with JWT token
+            if (
+              !msg.data ||
+              typeof (msg.data as any).version !== "string" ||
+              typeof (msg.data as any).name !== "string"
+            ) {
+              return send(ws, "error", { reason: "invalid_handshake" });
             }
-          } else {
-            // Allow unauthenticated connections for classic mode
-            session.name = (msg.data as any).name;
-          }
 
-          session.version = (msg.data as any).version;
-          send(ws, "handshake_accepted", {
-            peer_id: session.peerId || 0,
-            user_id: session.userId,
-            username: session.name,
-          });
-          logInfo(
-            `handshake: name=${session.name} auth=${session.isAuthenticated}`,
-          );
+            const token = (msg.data as any).token;
+            if (token) {
+              // Verify JWT token
+              const user = await verifyTokenWithFallback(token);
+              if (user) {
+                session.userId = user.userId;
+                session.isAuthenticated = true;
+                session.accessToken = token;
+                session.username = user.username;
+                session.name =
+                  user.display_name && user.display_name.trim().length > 0
+                    ? user.display_name
+                    : user.username;
+                logInfo(
+                  `authenticated user: userId=${user.userId} username=${session.username}`,
+                );
+              } else {
+                return send(ws, "error", { reason: "invalid_token" });
+              }
+            } else {
+              // Allow unauthenticated connections for classic mode
+              session.name = (msg.data as any).name;
+            }
 
-          // Broadcast user_online to all clients if authenticated
-          if (session.isAuthenticated && session.userId) {
-            broadcastToAll("user_online", {
+            session.version = (msg.data as any).version;
+            send(ws, "handshake_accepted", {
+              peer_id: session.peerId || 0,
               user_id: session.userId,
               username: session.name,
             });
-            logInfo(`Broadcasting user_online for user ${session.userId}`);
-          }
-
-          break;
-        }
-
-        case "create_room": {
-          // Require authentication for global mode
-          const identity = validateSessionIdentity(session);
-          if (!identity.ok) {
-            return send(ws, "error", {
-              reason: identity.reason,
-              message: identity.message,
-            });
-          }
-
-          // For global mode, the room should already exist from HTTP POST
-          // Check if user already has a room
-          const existingRoom = roomRepo.getUserActiveRoomStrict(
-            identity.userId,
-          );
-
-          if (!existingRoom) {
-            return send(ws, "error", {
-              reason: "no_room_found",
-              message: "Room must be created via HTTP POST /api/rooms first",
-            });
-          }
-
-          const existingLock = activeUserRoomLocks.get(identity.userId);
-          if (existingLock && existingLock.ws !== ws) {
-            return send(ws, "error", {
-              reason: "user_already_in_room",
-              existingRoomId: existingLock.roomId,
-              message:
-                "This account is already active in a room from another device/session. Leave that room first.",
-            });
-          }
-
-          if (session.roomId && session.roomId !== existingRoom.id) {
-            return send(ws, "error", {
-              reason: "user_already_in_room",
-              existingRoomId: session.roomId,
-              message:
-                "This account is already active in another room. Leave it first before switching.",
-            });
-          }
-
-          // Use the existing room from database
-          const roomId = existingRoom.id;
-
-          // Create room in memory if it doesn't exist yet
-          let room = roomManager.getRoom(roomId);
-          if (!room) {
-            room = roomManager.createRoomWithId(
-              roomId,
-              session.version,
-              identity.displayName,
-              ip,
+            logInfo(
+              `handshake: name=${session.name} auth=${session.isAuthenticated}`,
             );
+
+            // Broadcast user_online to all clients if authenticated
+            if (session.isAuthenticated && session.userId) {
+              broadcastToAll("user_online", {
+                user_id: session.userId,
+                username: session.name,
+              });
+              logInfo(`Broadcasting user_online for user ${session.userId}`);
+            }
+
+            break;
           }
 
-          // Ensure host is present in-memory for identity-based duplicate checks.
-          const existingHostMember = Array.from(room.clients.values()).find(
-            (client) => client.userId === identity.userId,
-          );
-          let hostPeerId = 1;
-          if (existingHostMember) {
-            hostPeerId = existingHostMember.peerId;
-            existingHostMember.isHost = true;
-            existingHostMember.name = identity.displayName;
-            existingHostMember.version = session.version;
-            room.hostPeerId = hostPeerId;
-          } else {
-            room.clients.set(1, {
-              peerId: 1,
-              userId: identity.userId,
-              name: identity.displayName,
-              version: session.version,
-              isHost: true,
-            });
-            room.hostPeerId = 1;
-            room.nextPeerId = Math.max(room.nextPeerId, 2);
-          }
+          case "create_room": {
+            // Require authentication for global mode
+            const identity = validateSessionIdentity(session);
+            if (!identity.ok) {
+              return send(ws, "error", {
+                reason: identity.reason,
+                message: identity.message,
+              });
+            }
 
-          // Persist host session so cross-device checks are DB-authoritative.
-          const hostSessionResult = roomRepo.addPlayerSession(
-            identity.userId,
-            roomId,
-          );
-          if (!hostSessionResult.ok) {
-            if (hostSessionResult.reason === "user_already_in_other_room") {
+            // For global mode, the room should already exist from HTTP POST
+            // Check if user already has a room
+            const existingRoom = roomRepo.getUserActiveRoomStrict(
+              identity.userId,
+            );
+
+            if (!existingRoom) {
+              return send(ws, "error", {
+                reason: "no_room_found",
+                message: "Room must be created via HTTP POST /api/rooms first",
+              });
+            }
+
+            const existingLock = activeUserRoomLocks.get(identity.userId);
+            if (existingLock && existingLock.ws !== ws) {
               return send(ws, "error", {
                 reason: "user_already_in_room",
-                existingRoomId: hostSessionResult.existingRoomId,
+                existingRoomId: existingLock.roomId,
                 message:
-                  "This account is already active in another room. Leave that room first before creating/confirming a room from this device.",
+                  "This account is already active in a room from another device/session. Leave that room first.",
               });
             }
 
-            if (hostSessionResult.reason === "database_error") {
+            if (session.roomId && session.roomId !== existingRoom.id) {
               return send(ws, "error", {
-                reason: "player_session_error",
+                reason: "user_already_in_room",
+                existingRoomId: session.roomId,
                 message:
-                  "Unable to confirm room host session right now. Please try again.",
+                  "This account is already active in another room. Leave it first before switching.",
               });
             }
-          }
 
-          // Host session is now persisted here (WebSocket confirmation).
-          // Update connection session and respond.
-          console.log(
-            `[WebSocket] 👑 Host ${identity.userId} (${identity.username}) confirming room ${roomId}`,
-          );
+            // Use the existing room from database
+            const roomId = existingRoom.id;
 
-          session.peerId = hostPeerId;
-          session.roomId = roomId;
-          session.username = identity.username;
-          session.name = identity.displayName;
-          activeUserRoomLocks.set(identity.userId, { roomId, ws });
-
-          // Host confirmation updates room membership count/state.
-          notifyAllClientsRoomsChanged();
-          void syncRegistryRoomStateNow();
-
-          send(ws, "room_created", {
-            roomId: roomId,
-            peerId: hostPeerId,
-            gamemode: existingRoom.gamemode,
-            mapName: existingRoom.map_name,
-          });
-          logInfo(
-            `room created: roomId=${roomId} gamemode=${existingRoom.gamemode} host=${session.name}`,
-          );
-          break;
-        }
-
-        case "join_room": {
-          // Require authentication for global mode
-          const identity = validateSessionIdentity(session);
-          if (!identity.ok) {
-            return send(ws, "error", {
-              reason: identity.reason,
-              message: identity.message,
-            });
-          }
-
-          if (
-            !msg.data ||
-            typeof (msg.data as any).roomId !== "string" ||
-            typeof (msg.data as any).version !== "string"
-          ) {
-            console.log(`[WebSocket] ❌ join_room: Invalid data format`);
-            return send(ws, "error", { reason: "invalid_join_room" });
-          }
-
-          const roomId = (msg.data as any).roomId;
-          const version = (msg.data as any).version;
-          const playerName = identity.displayName;
-          session.username = identity.username;
-          session.name = playerName;
-
-          // Acquire/refresh per-user lock BEFORE expensive join work to block cross-device races.
-          const existingLock = activeUserRoomLocks.get(identity.userId);
-          if (existingLock && existingLock.ws !== ws) {
-            return send(ws, "error", {
-              reason: "user_already_in_room",
-              existingRoomId: existingLock.roomId,
-              message:
-                "This account is already active in a room from another device/session. Leave that room first.",
-            });
-          }
-          activeUserRoomLocks.set(identity.userId, { roomId, ws });
-          const releaseJoinLock = () => {
-            const lock = activeUserRoomLocks.get(identity.userId);
-            if (lock && lock.ws === ws && session.roomId !== lock.roomId) {
-              activeUserRoomLocks.delete(identity.userId);
+            // Create room in memory if it doesn't exist yet
+            let room = roomManager.getRoom(roomId);
+            if (!room) {
+              room = roomManager.createRoomWithId(
+                roomId,
+                session.version,
+                identity.displayName,
+                ip,
+              );
             }
-          };
 
-          // Authoritative identity check: block only if user is active in a DIFFERENT room.
-          const conflictingRoom = roomRepo.getUserConflictingActiveRoom(
-            identity.userId,
-            roomId,
-          );
-          if (conflictingRoom) {
-            releaseJoinLock();
-            return send(ws, "error", {
-              reason: "user_already_in_room",
-              existingRoomId: conflictingRoom.id,
-              message:
-                "This account is already active in another room. Leave that room first before joining.",
+            // Ensure host is present in-memory for identity-based duplicate checks.
+            const existingHostMember = Array.from(room.clients.values()).find(
+              (client) => client.userId === identity.userId,
+            );
+            let hostPeerId = 1;
+            if (existingHostMember) {
+              hostPeerId = existingHostMember.peerId;
+              existingHostMember.isHost = true;
+              existingHostMember.name = identity.displayName;
+              existingHostMember.version = session.version;
+              room.hostPeerId = hostPeerId;
+            } else {
+              room.clients.set(1, {
+                peerId: 1,
+                userId: identity.userId,
+                name: identity.displayName,
+                version: session.version,
+                isHost: true,
+              });
+              room.hostPeerId = 1;
+              room.nextPeerId = Math.max(room.nextPeerId, 2);
+            }
+
+            // Persist host session so cross-device checks are DB-authoritative.
+            const hostSessionResult = roomRepo.addPlayerSession(
+              identity.userId,
+              roomId,
+            );
+            if (!hostSessionResult.ok) {
+              if (hostSessionResult.reason === "user_already_in_other_room") {
+                return send(ws, "error", {
+                  reason: "user_already_in_room",
+                  existingRoomId: hostSessionResult.existingRoomId,
+                  message:
+                    "This account is already active in another room. Leave that room first before creating/confirming a room from this device.",
+                });
+              }
+
+              if (hostSessionResult.reason === "database_error") {
+                return send(ws, "error", {
+                  reason: "player_session_error",
+                  message:
+                    "Unable to confirm room host session right now. Please try again.",
+                });
+              }
+            }
+
+            // Host session is now persisted here (WebSocket confirmation).
+            // Update connection session and respond.
+            console.log(
+              `[WebSocket] 👑 Host ${identity.userId} (${identity.username}) confirming room ${roomId}`,
+            );
+
+            session.peerId = hostPeerId;
+            session.roomId = roomId;
+            session.username = identity.username;
+            session.name = identity.displayName;
+            activeUserRoomLocks.set(identity.userId, { roomId, ws });
+
+            // Host confirmation updates room membership count/state.
+            notifyAllClientsRoomsChanged();
+            void syncRegistryRoomStateNow();
+
+            send(ws, "room_created", {
+              roomId: roomId,
+              peerId: hostPeerId,
+              gamemode: existingRoom.gamemode,
+              mapName: existingRoom.map_name,
             });
+            logInfo(
+              `room created: roomId=${roomId} gamemode=${existingRoom.gamemode} host=${session.name}`,
+            );
+            break;
           }
 
-          // Security lock: one authenticated user can be in only one active room
-          // across all websocket sessions/devices.
-          if (session.roomId && session.roomId !== roomId) {
-            releaseJoinLock();
-            return send(ws, "error", {
-              reason: "user_already_in_room",
-              existingRoomId: session.roomId,
-              message:
-                "This account is already active in another room. Leave it first before joining a different room.",
-            });
-          }
+          case "join_room": {
+            // Require authentication for global mode
+            const identity = validateSessionIdentity(session);
+            if (!identity.ok) {
+              return send(ws, "error", {
+                reason: identity.reason,
+                message: identity.message,
+              });
+            }
 
-          const otherSessionInRoom = Array.from(clientSessions.values()).find(
-            (s) =>
-              s.ws !== ws &&
-              s.userId === identity.userId &&
-              s.isAuthenticated &&
-              s.roomId !== null,
-          );
-          if (otherSessionInRoom) {
-            releaseJoinLock();
-            return send(ws, "error", {
-              reason: "user_already_in_room",
-              existingRoomId: otherSessionInRoom.roomId,
-              message:
-                "This account is already active in a room from another device/session. Leave that room first before joining.",
-            });
-          }
+            if (
+              !msg.data ||
+              typeof (msg.data as any).roomId !== "string" ||
+              typeof (msg.data as any).version !== "string"
+            ) {
+              console.log(`[WebSocket] ❌ join_room: Invalid data format`);
+              return send(ws, "error", { reason: "invalid_join_room" });
+            }
 
-          console.log(
-            `[WebSocket] 📥 join_room request: user=${identity.userId} username=${identity.username} room=${roomId} display=${playerName}`,
-          );
+            const roomId = (msg.data as any).roomId;
+            const version = (msg.data as any).version;
+            const playerName = identity.displayName;
+            session.username = identity.username;
+            session.name = playerName;
 
-          // Never allow joins into inactive/missing rooms.
-          const dbRoom = roomRepo.getRoomById(roomId);
-          if (!dbRoom) {
-            releaseJoinLock();
-            return send(ws, "error", { reason: "room_not_found" });
-          }
-          if (!dbRoom.is_active) {
-            releaseJoinLock();
-            return send(ws, "error", {
-              reason: "room_inactive",
-              message: "Room is inactive and can no longer be joined.",
-            });
-          }
+            // Acquire/refresh per-user lock BEFORE expensive join work to block cross-device races.
+            const existingLock = activeUserRoomLocks.get(identity.userId);
+            if (existingLock && existingLock.ws !== ws) {
+              return send(ws, "error", {
+                reason: "user_already_in_room",
+                existingRoomId: existingLock.roomId,
+                message:
+                  "This account is already active in a room from another device/session. Leave that room first.",
+              });
+            }
+            activeUserRoomLocks.set(identity.userId, { roomId, ws });
+            const releaseJoinLock = () => {
+              const lock = activeUserRoomLocks.get(identity.userId);
+              if (lock && lock.ws === ws && session.roomId !== lock.roomId) {
+                activeUserRoomLocks.delete(identity.userId);
+              }
+            };
 
-          // Check if room exists in memory; if not, try to load from database
-          let room = roomManager.getRoom(roomId);
-          if (!room) {
-            // Room not in memory yet; create it from database info
-            // Create room in memory with info from database
-            room = roomManager.createRoomWithId(
+            // Authoritative identity check: block only if user is active in a DIFFERENT room.
+            const conflictingRoom = roomRepo.getUserConflictingActiveRoom(
+              identity.userId,
+              roomId,
+            );
+            if (conflictingRoom) {
+              releaseJoinLock();
+              return send(ws, "error", {
+                reason: "user_already_in_room",
+                existingRoomId: conflictingRoom.id,
+                message:
+                  "This account is already active in another room. Leave that room first before joining.",
+              });
+            }
+
+            // Security lock: one authenticated user can be in only one active room
+            // across all websocket sessions/devices.
+            if (session.roomId && session.roomId !== roomId) {
+              releaseJoinLock();
+              return send(ws, "error", {
+                reason: "user_already_in_room",
+                existingRoomId: session.roomId,
+                message:
+                  "This account is already active in another room. Leave it first before joining a different room.",
+              });
+            }
+
+            const otherSessionInRoom = Array.from(clientSessions.values()).find(
+              (s) =>
+                s.ws !== ws &&
+                s.userId === identity.userId &&
+                s.isAuthenticated &&
+                s.roomId !== null,
+            );
+            if (otherSessionInRoom) {
+              releaseJoinLock();
+              return send(ws, "error", {
+                reason: "user_already_in_room",
+                existingRoomId: otherSessionInRoom.roomId,
+                message:
+                  "This account is already active in a room from another device/session. Leave that room first before joining.",
+              });
+            }
+
+            console.log(
+              `[WebSocket] 📥 join_room request: user=${identity.userId} username=${identity.username} room=${roomId} display=${playerName}`,
+            );
+
+            // Never allow joins into inactive/missing rooms.
+            const dbRoom = roomRepo.getRoomById(roomId);
+            if (!dbRoom) {
+              releaseJoinLock();
+              return send(ws, "error", { reason: "room_not_found" });
+            }
+            if (!dbRoom.is_active) {
+              releaseJoinLock();
+              return send(ws, "error", {
+                reason: "room_inactive",
+                message: "Room is inactive and can no longer be joined.",
+              });
+            }
+
+            // Check if room exists in memory; if not, try to load from database
+            let room = roomManager.getRoom(roomId);
+            if (!room) {
+              // Room not in memory yet; create it from database info
+              // Create room in memory with info from database
+              room = roomManager.createRoomWithId(
+                roomId,
+                version,
+                dbRoom.host_username,
+                ip,
+              );
+              console.log(
+                `[WebSocket] 📂 Loaded room ${roomId} from database into memory`,
+              );
+            }
+
+            const result = roomManager.joinRoom(
               roomId,
               version,
-              dbRoom.host_username,
+              identity.userId,
+              playerName,
               ip,
             );
-            console.log(
-              `[WebSocket] 📂 Loaded room ${roomId} from database into memory`,
-            );
-          }
-
-          const result = roomManager.joinRoom(
-            roomId,
-            version,
-            identity.userId,
-            playerName,
-            ip,
-          );
-          if ("error" in result) {
-            console.log(
-              `[WebSocket] ❌ join_room: RoomManager error - ${result.error}`,
-            );
-            releaseJoinLock();
-            return send(ws, "error", { reason: result.error });
-          }
-          const { room: updatedRoom, peerId } = result;
-
-          // Add player to room session (enforces single-room, increments player count)
-          const sessionResult = roomRepo.addPlayerSession(
-            identity.userId,
-            roomId,
-          );
-          if (!sessionResult.ok) {
-            if (sessionResult.reason === "user_already_in_target_room") {
-              const existingRoomId = sessionResult.existingRoomId;
-              const otherLiveInRoomSession = Array.from(
-                clientSessions.values(),
-              ).find(
-                (s) =>
-                  s.ws !== ws &&
-                  s.userId === identity.userId &&
-                  s.isAuthenticated &&
-                  s.roomId === roomId,
+            if ("error" in result) {
+              console.log(
+                `[WebSocket] ❌ join_room: RoomManager error - ${result.error}`,
               );
-              if (otherLiveInRoomSession) {
-                // True concurrent session in the same room -> block.
-                roomManager.leaveRoom(roomId, peerId);
+              releaseJoinLock();
+              return send(ws, "error", { reason: result.error });
+            }
+            const { room: updatedRoom, peerId } = result;
+
+            // Add player to room session (enforces single-room, increments player count)
+            const sessionResult = roomRepo.addPlayerSession(
+              identity.userId,
+              roomId,
+            );
+            if (!sessionResult.ok) {
+              if (sessionResult.reason === "user_already_in_target_room") {
+                const existingRoomId = sessionResult.existingRoomId;
+                const otherLiveInRoomSession = Array.from(
+                  clientSessions.values(),
+                ).find(
+                  (s) =>
+                    s.ws !== ws &&
+                    s.userId === identity.userId &&
+                    s.isAuthenticated &&
+                    s.roomId === roomId,
+                );
+                if (otherLiveInRoomSession) {
+                  // True concurrent session in the same room -> block.
+                  roomManager.leaveRoom(roomId, peerId);
+                  console.log(
+                    `[WebSocket] ⛔ Blocking concurrent same-room session for user ${identity.userId} in ${existingRoomId}`,
+                  );
+                  releaseJoinLock();
+                  return send(ws, "error", {
+                    reason: "user_already_in_room",
+                    existingRoomId,
+                    message: `This account is already active in room ${existingRoomId}. Leave that room first before joining from another device.`,
+                  });
+                }
+
+                // Idempotent reconnect: DB row already exists for this user+room, but no other live room session.
                 console.log(
-                  `[WebSocket] ⛔ Blocking concurrent same-room session for user ${identity.userId} in ${existingRoomId}`,
+                  `[WebSocket] 🔁 Allowing idempotent same-room reconnect for user ${identity.userId} in ${existingRoomId}`,
+                );
+              } else if (
+                sessionResult.reason === "user_already_in_other_room"
+              ) {
+                // Roll back in-memory room membership because user is active elsewhere.
+                roomManager.leaveRoom(roomId, peerId);
+                const existingRoomId = sessionResult.existingRoomId;
+                console.log(
+                  `[WebSocket] ⛔ Blocking duplicate login for user ${identity.userId}; active in ${existingRoomId}`,
                 );
                 releaseJoinLock();
                 return send(ws, "error", {
                   reason: "user_already_in_room",
                   existingRoomId,
-                  message: `This account is already active in room ${existingRoomId}. Leave that room first before joining from another device.`,
-                });
-              }
-
-              // Idempotent reconnect: DB row already exists for this user+room, but no other live room session.
-              console.log(
-                `[WebSocket] 🔁 Allowing idempotent same-room reconnect for user ${identity.userId} in ${existingRoomId}`,
-              );
-            } else if (sessionResult.reason === "user_already_in_other_room") {
-              // Roll back in-memory room membership because user is active elsewhere.
-              roomManager.leaveRoom(roomId, peerId);
-              const existingRoomId = sessionResult.existingRoomId;
-              console.log(
-                `[WebSocket] ⛔ Blocking duplicate login for user ${identity.userId}; active in ${existingRoomId}`,
-              );
-              releaseJoinLock();
-              return send(ws, "error", {
-                reason: "user_already_in_room",
-                existingRoomId,
-                message: `This account is already active in another room (${existingRoomId}). Leave that room first before joining from another device.`,
-              });
-            } else {
-              // database_error
-              roomManager.leaveRoom(roomId, peerId);
-              releaseJoinLock();
-              return send(ws, "error", {
-                reason: "player_session_error",
-                message: "Unable to join room right now. Please try again.",
-              });
-            }
-
-            // For user_already_in_target_room reconnect path, continue and attach websocket session.
-          }
-
-          // Commit websocket session state only after DB/session lock succeeds.
-          session.peerId = peerId;
-          session.name = playerName;
-          session.username = identity.username;
-          session.version = version;
-          session.roomId = roomId;
-          session.joinedRoomAtMs = Date.now();
-          activeUserRoomLocks.set(identity.userId, { roomId, ws });
-
-          console.log(
-            `[WebSocket] 🎮 Player ${identity.userId} (${identity.username}) joined room ${roomId}`,
-          );
-
-          // Check if room was empty and promote this player to host
-          const memberCount = roomManager.getRoomMembers(roomId).length;
-          if (memberCount === 1) {
-            // This is the first player joining - make them the host
-            const updatedMember = roomManager.getRoomMembers(roomId)[0];
-            updatedMember.isHost = true;
-            room.hostPeerId = updatedMember.peerId;
-            roomRepo.updateRoomHost(
-              roomId,
-              identity.userId,
-              identity.displayName,
-            );
-            console.log(
-              `[WebSocket] 👑 Player ${identity.userId} promoted to host (first member in empty room)`,
-            );
-          }
-
-          // Player count already updated by addPlayerSession, no need to update again
-
-          const roomJoinAtMs = session.joinedRoomAtMs ?? Date.now();
-          const members = roomManager.getRoomMembers(roomId);
-          const chatHistory = roomRepo.getRecentRoomChatMessages(roomId, 100);
-          const dbActiveGamemode: ActiveGamemodePayload | null =
-            parseDbActiveGamemode(dbRoom, roomJoinAtMs);
-          const activeGamemodePayload: ActiveGamemodePayload | null =
-            dbActiveGamemode !== null
-              ? dbActiveGamemode
-              : updatedRoom.activeGamemode === null
-                ? null
-                : {
-                    index: updatedRoom.activeGamemode.index,
-                    params: updatedRoom.activeGamemode.params,
-                    mods: updatedRoom.activeGamemode.mods,
-                    startedAtMs: updatedRoom.activeGamemode.startedAtMs,
-                    remainingSecs: calculateRemainingSecsAt(
-                      updatedRoom.activeGamemode.startedAtMs,
-                      updatedRoom.activeGamemode.params,
-                      roomJoinAtMs,
-                    ),
-                    serverNowMs: roomJoinAtMs,
-                  };
-          const selectedGamemodePayload: SelectedGamemodePayload | null =
-            parseDbSelectedGamemode(dbRoom);
-          console.log(
-            `[WebSocket] 👥 Room ${roomId} members:`,
-            members.map((m) => `peer=${m.peerId} name=${m.name}`),
-          );
-
-          // Player count/state may have changed due to successful join.
-          notifyAllClientsRoomsChanged();
-          void syncRegistryRoomStateNow();
-
-          send(ws, "room_joined", {
-            roomId: roomId,
-            peerId,
-            members: members.map((c) => ({
-              peerId: c.peerId,
-              name: c.name,
-              isHost: c.isHost,
-            })),
-            gamemode: dbRoom?.gamemode || "Deathmatch",
-            mapName: dbRoom?.map_name || "Frozen Field",
-            currentTbw: updatedRoom.currentTbw,
-            activeGamemode: activeGamemodePayload,
-            selectedGamemode: selectedGamemodePayload,
-            chatHistory: chatHistory.map((entry) => ({
-              from: entry.sender_peer_id ?? 0,
-              fromName: entry.sender_name,
-              text: entry.message,
-              createdAt: entry.created_at,
-            })),
-          });
-
-          console.log(
-            `[WebSocket] 📢 Broadcasting peer_joined to room: peerId=${peerId} name=${session.name}`,
-          );
-          broadcast(
-            updatedRoom,
-            "peer_joined",
-            { peerId, name: session.name },
-            peerId,
-          );
-          logInfo(
-            `peer joined: roomId=${roomId} peerId=${peerId} name=${session.name}`,
-          );
-          break;
-        }
-
-        case "leave_room": {
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "left_room", { roomId: null, peerId: null });
-          }
-
-          const otherAuthenticatedSessions = session.userId
-            ? Array.from(clientSessions.values()).filter(
-                (s) =>
-                  s.ws !== ws &&
-                  s.userId === session.userId &&
-                  s.isAuthenticated,
-              )
-            : [];
-
-          handleRoomDeparture(ws, session, otherAuthenticatedSessions, false);
-
-          if (session.userId) {
-            const lock = activeUserRoomLocks.get(session.userId);
-            if (lock && lock.ws === ws) {
-              const replacement = otherAuthenticatedSessions[0];
-              if (replacement && replacement.roomId) {
-                activeUserRoomLocks.set(session.userId, {
-                  roomId: replacement.roomId,
-                  ws: replacement.ws,
+                  message: `This account is already active in another room (${existingRoomId}). Leave that room first before joining from another device.`,
                 });
               } else {
-                activeUserRoomLocks.delete(session.userId);
-              }
-            }
-          }
-
-          send(ws, "left_room", { roomId: null, peerId: null });
-          break;
-        }
-
-        case "chat": {
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) return send(ws, "error", { reason: "room_not_found" });
-          const textRaw =
-            typeof (msg.data as any)?.text === "string"
-              ? (msg.data as any).text.slice(0, 500)
-              : "";
-          const text = textRaw.trim();
-          if (text.length === 0) {
-            return;
-          }
-
-          roomRepo.addRoomChatMessage({
-            roomId: room.id,
-            senderUserId: session.userId,
-            senderPeerId: session.peerId,
-            senderName: session.name,
-            message: text,
-          });
-
-          broadcast(room, "chat", {
-            from: session.peerId,
-            fromName: session.name,
-            text,
-          });
-          logInfo(
-            `chat: roomId=${room.id} peerId=${session.peerId} msg=${text.slice(
-              0,
-              50,
-            )}`,
-          );
-          break;
-        }
-
-        case "load_tbw": {
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) return send(ws, "error", { reason: "room_not_found" });
-          if (!room.clients.get(session.peerId)?.isHost) {
-            return send(ws, "error", { reason: "not_host" });
-          }
-          const lines = Array.isArray((msg.data as any)?.lines)
-            ? (msg.data as any).lines.slice(0, 200000)
-            : [];
-          roomManager.updateTbw(room.id, lines);
-          broadcast(room, "tbw", { lines });
-          logInfo(`tbw broadcast: roomId=${room.id} lines=${lines.length}`);
-          break;
-        }
-
-        case "player_snapshot": {
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) return send(ws, "error", { reason: "room_not_found" });
-          broadcast(
-            room,
-            "player_snapshot",
-            {
-              from: session.peerId,
-              payload: (msg.data as any)?.payload ?? {},
-            },
-            session.peerId,
-          );
-          break;
-        }
-
-        case "player_state": {
-          // Relay player state (position, rotation, velocity) to all other clients
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) return send(ws, "error", { reason: "room_not_found" });
-
-          const stateData = (msg.data as any) || {};
-          broadcast(
-            room,
-            "player_state",
-            {
-              peerId: session.peerId,
-              position: stateData.position || { x: 0, y: 0, z: 0 },
-              rotation: stateData.rotation || { x: 0, y: 0, z: 0 },
-              velocity: stateData.velocity || { x: 0, y: 0, z: 0 },
-              // Pass through animation and state so clients can fully sync visuals
-              state: stateData.state ?? 0,
-              anim: stateData.anim || {},
-            },
-            session.peerId,
-          );
-          break;
-        }
-
-        case "kick": {
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) return send(ws, "error", { reason: "room_not_found" });
-          if (!room.clients.get(session.peerId)?.isHost) {
-            return send(ws, "error", { reason: "not_host" });
-          }
-          const targetPeerId = (msg.data as any)?.peerId;
-          if (typeof targetPeerId !== "number") {
-            return send(ws, "error", { reason: "invalid_target" });
-          }
-          const targetSession = Array.from(clientSessions.values()).find(
-            (s) => s.roomId === room.id && s.peerId === targetPeerId,
-          );
-          if (targetSession) {
-            send(targetSession.ws, "kicked", { reason: "host_kick" });
-            cleanupClient(targetSession.ws);
-          }
-          logInfo(`kick: roomId=${room.id} target=${targetPeerId}`);
-          break;
-        }
-
-        case "ban": {
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) return send(ws, "error", { reason: "room_not_found" });
-          if (!room.clients.get(session.peerId)?.isHost) {
-            return send(ws, "error", { reason: "not_host" });
-          }
-          const targetIp = (msg.data as any)?.ip;
-          if (typeof targetIp !== "string") {
-            return send(ws, "error", { reason: "invalid_target" });
-          }
-          roomManager.banPlayer(room.id, targetIp);
-          logInfo(`ban: roomId=${room.id} ip=${targetIp}`);
-          break;
-        }
-
-        case "ping": {
-          send(ws, "pong", { ts: Date.now() });
-          break;
-        }
-
-        case "match_result": {
-          const identity = validateSessionIdentity(session);
-          if (!identity.ok || !session.accessToken) {
-            return send(ws, "error", {
-              reason: "authentication_required",
-              message:
-                "Authenticated host session required for match reporting",
-            });
-          }
-
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) {
-            return send(ws, "error", { reason: "room_not_found" });
-          }
-
-          if (!room.clients.get(session.peerId)?.isHost) {
-            return send(ws, "error", {
-              reason: "not_host",
-              message: "Only room host can submit match results",
-            });
-          }
-
-          const payload = (msg.data as any) || {};
-          const gamemode =
-            typeof payload.gamemode === "string" &&
-            payload.gamemode.trim().length > 0
-              ? payload.gamemode.trim()
-              : "unknown";
-
-          const winnerRaw = payload.winner_user_id ?? payload.winnerUserId;
-          const winnerUserId =
-            typeof winnerRaw === "number"
-              ? winnerRaw
-              : typeof winnerRaw === "string"
-                ? Number.parseInt(winnerRaw, 10)
-                : null;
-
-          const durationRaw =
-            payload.duration_seconds ?? payload.durationSeconds;
-          const durationSeconds =
-            typeof durationRaw === "number"
-              ? Math.max(0, Math.floor(durationRaw))
-              : typeof durationRaw === "string"
-                ? Math.max(0, Number.parseInt(durationRaw, 10) || 0)
-                : 0;
-
-          const sourcePlayers = Array.isArray(payload.players)
-            ? payload.players
-            : [];
-          const players: MatchPlayerReport[] = sourcePlayers
-            .map((entry: any) => {
-              const userIdRaw = entry?.user_id ?? entry?.userId;
-              const parsedUserId =
-                typeof userIdRaw === "number"
-                  ? userIdRaw
-                  : typeof userIdRaw === "string"
-                    ? Number.parseInt(userIdRaw, 10)
-                    : NaN;
-
-              if (!Number.isInteger(parsedUserId) || parsedUserId <= 0) {
-                return null;
+                // database_error
+                roomManager.leaveRoom(roomId, peerId);
+                releaseJoinLock();
+                return send(ws, "error", {
+                  reason: "player_session_error",
+                  message: "Unable to join room right now. Please try again.",
+                });
               }
 
-              const kills = Number.parseInt(String(entry?.kills ?? 0), 10) || 0;
-              const deaths =
-                Number.parseInt(String(entry?.deaths ?? 0), 10) || 0;
-              const playtimeSeconds =
-                Number.parseInt(
-                  String(
-                    entry?.playtime_seconds ?? entry?.playtimeSeconds ?? 0,
-                  ),
-                  10,
-                ) || 0;
-
-              return {
-                user_id: parsedUserId,
-                kills: Math.max(0, kills),
-                deaths: Math.max(0, deaths),
-                playtime_seconds: Math.max(0, playtimeSeconds),
-                won: Boolean(entry?.won),
-              } satisfies MatchPlayerReport;
-            })
-            .filter(
-              (entry: MatchPlayerReport | null): entry is MatchPlayerReport =>
-                entry !== null,
-            );
-
-          if (players.length === 0) {
-            return send(ws, "error", {
-              reason: "invalid_match_result",
-              message: "players array must include at least one valid user_id",
-            });
-          }
-
-          const localMatchHistoryId = roomRepo.addRoomMatchHistory({
-            roomId: session.roomId,
-            gamemode,
-            winnerUserId:
-              winnerUserId && Number.isInteger(winnerUserId) && winnerUserId > 0
-                ? winnerUserId
-                : null,
-            durationSeconds,
-          });
-          roomRepo.addRoomMatchParticipants(localMatchHistoryId, players);
-
-          reportMatchToDjango(session.accessToken, {
-            room_id: session.roomId,
-            gamemode,
-            winner_user_id:
-              winnerUserId && Number.isInteger(winnerUserId) && winnerUserId > 0
-                ? winnerUserId
-                : null,
-            duration_seconds: durationSeconds,
-            players,
-          })
-            .then((result) => {
-              roomRepo.markRoomMatchHistoryTransferred(
-                localMatchHistoryId,
-                typeof result.match_id === "number" ? result.match_id : null,
-              );
-              send(ws, "match_result_saved", {
-                roomId: session.roomId,
-                matchId: result.match_id ?? null,
-                processedPlayers: result.processed_players ?? players.length,
-              });
-              logInfo(
-                `match_result persisted: roomId=${session.roomId} matchId=${result.match_id ?? "n/a"} players=${players.length}`,
-              );
-            })
-            .catch((err: unknown) => {
-              const errorMessage =
-                err instanceof Error ? err.message : String(err);
-              roomRepo.markRoomMatchHistoryTransferFailed(
-                localMatchHistoryId,
-                errorMessage,
-              );
-              logWarning(
-                `match_result persistence failed for roomId=${session.roomId}: ${errorMessage}`,
-              );
-              send(ws, "match_result_error", {
-                roomId: session.roomId,
-                message: "Failed to persist match result",
-              });
-            });
-
-          break;
-        }
-
-        case "rpc_call": {
-          // Handle RPC calls - relay to target peer(s)
-          if (!session.roomId || session.peerId === null) {
-            return send(ws, "error", { reason: "not_in_room" });
-          }
-          const room = roomManager.getRoom(session.roomId);
-          if (!room) return send(ws, "error", { reason: "room_not_found" });
-
-          const targetPeer = (msg.data as any)?.targetPeer || 0;
-          const method = (msg.data as any)?.method || "";
-          const argsRaw = (msg.data as any)?.args;
-          const args: unknown[] = Array.isArray(argsRaw) ? argsRaw : [];
-          let forwardedArgs: unknown[] = args;
-          let shouldRelay = true;
-
-          const sender = room.clients.get(session.peerId);
-          const senderIsHost = Boolean(sender?.isHost);
-          if (method === "remote_start_gamemode" && senderIsHost) {
-            const idxRaw = Array.isArray(args) ? args[0] : undefined;
-            const paramsRaw = Array.isArray(args) ? args[1] : [];
-            const modsRaw = Array.isArray(args) ? args[2] : [];
-            const startedRaw = Array.isArray(args) ? args[3] : 0;
-            const labelRaw = Array.isArray(args) ? args[4] : undefined;
-            const idx =
-              typeof idxRaw === "number"
-                ? Math.max(0, Math.floor(idxRaw))
-                : Number.parseInt(String(idxRaw ?? 0), 10) || 0;
-            const startedAtMs =
-              typeof startedRaw === "number"
-                ? Math.max(0, Math.floor(startedRaw))
-                : Number.parseInt(String(startedRaw ?? 0), 10) || Date.now();
-            roomManager.setActiveGamemode(
-              room.id,
-              idx,
-              Array.isArray(paramsRaw) ? paramsRaw : [],
-              Array.isArray(modsRaw) ? modsRaw : [],
-              startedAtMs,
-            );
-            roomRepo.setActiveGamemodeState(
-              room.id,
-              idx,
-              Array.isArray(paramsRaw) ? paramsRaw : [],
-              Array.isArray(modsRaw) ? modsRaw : [],
-              startedAtMs,
-              totalGamemodeSecondsFromParams(
-                Array.isArray(paramsRaw) ? paramsRaw : [],
-              ),
-              true,
-            );
-            const serverNowMs = Date.now();
-            const normalizedParams = Array.isArray(paramsRaw) ? paramsRaw : [];
-            const normalizedMods = Array.isArray(modsRaw) ? modsRaw : [];
-            const totalSecs = totalGamemodeSecondsFromParams(normalizedParams);
-            const remainingSecs = calculateRemainingSecsAt(
-              startedAtMs,
-              normalizedParams,
-              serverNowMs,
-            );
-            forwardedArgs = [
-              idx,
-              normalizedParams,
-              normalizedMods,
-              startedAtMs,
-              remainingSecs,
-              serverNowMs,
-              totalSecs,
-            ];
-            if (typeof labelRaw === "string" && labelRaw.trim().length > 0) {
-              roomTimerLabels.set(room.id, labelRaw);
+              // For user_already_in_target_room reconnect path, continue and attach websocket session.
             }
-          } else if (method === "remote_end_gamemode" && senderIsHost) {
-            const active = room.activeGamemode;
-            const reportPayloadRaw =
-              Array.isArray(args) && args.length > 0 ? args[0] : null;
-            const reportPayload =
-              reportPayloadRaw && typeof reportPayloadRaw === "object"
-                ? (reportPayloadRaw as Record<string, unknown>)
-                : null;
+
+            // Commit websocket session state only after DB/session lock succeeds.
+            session.peerId = peerId;
+            session.name = playerName;
+            session.username = identity.username;
+            session.version = version;
+            session.roomId = roomId;
+            session.joinedRoomAtMs = Date.now();
+            activeUserRoomLocks.set(identity.userId, { roomId, ws });
+
+            console.log(
+              `[WebSocket] 🎮 Player ${identity.userId} (${identity.username}) joined room ${roomId}`,
+            );
+
+            // Check if room was empty and promote this player to host
+            const memberCount = roomManager.getRoomMembers(roomId).length;
+            if (memberCount === 1) {
+              // This is the first player joining - make them the host
+              const updatedMember = roomManager.getRoomMembers(roomId)[0];
+              updatedMember.isHost = true;
+              room.hostPeerId = updatedMember.peerId;
+              roomRepo.updateRoomHost(
+                roomId,
+                identity.userId,
+                identity.displayName,
+              );
+              console.log(
+                `[WebSocket] 👑 Player ${identity.userId} promoted to host (first member in empty room)`,
+              );
+            }
+
+            // Player count already updated by addPlayerSession, no need to update again
+
+            const roomJoinAtMs = session.joinedRoomAtMs ?? Date.now();
+            const members = roomManager.getRoomMembers(roomId);
+            const chatHistory = roomRepo.getRecentRoomChatMessages(roomId, 100);
+            const dbActiveGamemode: ActiveGamemodePayload | null =
+              parseDbActiveGamemode(dbRoom, roomJoinAtMs);
+            const activeGamemodePayload: ActiveGamemodePayload | null =
+              dbActiveGamemode !== null
+                ? dbActiveGamemode
+                : updatedRoom.activeGamemode === null
+                  ? null
+                  : {
+                      index: updatedRoom.activeGamemode.index,
+                      params: updatedRoom.activeGamemode.params,
+                      mods: updatedRoom.activeGamemode.mods,
+                      startedAtMs: updatedRoom.activeGamemode.startedAtMs,
+                      remainingSecs: calculateRemainingSecsAt(
+                        updatedRoom.activeGamemode.startedAtMs,
+                        updatedRoom.activeGamemode.params,
+                        roomJoinAtMs,
+                      ),
+                      serverNowMs: roomJoinAtMs,
+                    };
+            const selectedGamemodePayload: SelectedGamemodePayload | null =
+              parseDbSelectedGamemode(dbRoom);
+            console.log(
+              `[WebSocket] 👥 Room ${roomId} members:`,
+              members.map((m) => `peer=${m.peerId} name=${m.name}`),
+            );
+
+            // Player count/state may have changed due to successful join.
+            notifyAllClientsRoomsChanged();
+            void syncRegistryRoomStateNow();
+
+            send(ws, "room_joined", {
+              roomId: roomId,
+              peerId,
+              members: members.map((c) => ({
+                peerId: c.peerId,
+                name: c.name,
+                isHost: c.isHost,
+              })),
+              gamemode: dbRoom?.gamemode || "Deathmatch",
+              mapName: dbRoom?.map_name || "Frozen Field",
+              currentTbw: updatedRoom.currentTbw,
+              activeGamemode: activeGamemodePayload,
+              selectedGamemode: selectedGamemodePayload,
+              chatHistory: chatHistory.map((entry) => ({
+                from: entry.sender_peer_id ?? 0,
+                fromName: entry.sender_name,
+                text: entry.message,
+                createdAt: entry.created_at,
+              })),
+            });
+
+            console.log(
+              `[WebSocket] 📢 Broadcasting peer_joined to room: peerId=${peerId} name=${session.name}`,
+            );
+            broadcast(
+              updatedRoom,
+              "peer_joined",
+              { peerId, name: session.name },
+              peerId,
+            );
             logInfo(
-              `gamemode_end received: roomId=${room.id} hasReport=${reportPayload !== null}`,
+              `peer joined: roomId=${roomId} peerId=${peerId} name=${session.name}`,
             );
-            if (active !== null) {
-              const startedAtMs = toSafeMs(active.startedAtMs);
-              const endedAtMs = Date.now();
-              const durationSeconds = Math.max(
-                0,
-                Math.floor((endedAtMs - startedAtMs) / 1000),
-              );
-              roomRepo.addRoomGamemodeHistory({
-                roomId: room.id,
-                gamemodeIndex: active.index,
-                params: Array.isArray(active.params) ? active.params : [],
-                mods: Array.isArray(active.mods) ? active.mods : [],
-                timerSeconds: totalGamemodeSecondsFromParams(
-                  Array.isArray(active.params) ? active.params : [],
-                ),
-                startedAtMs,
-                endedAtMs,
-                durationSeconds,
-              });
+            break;
+          }
 
-              if (reportPayload) {
-                const gamemode = safeString(
-                  reportPayload.gamemode,
-                  roomRepo.getRoomById(room.id)?.gamemode || "unknown",
-                );
-                const durationFromPayload = Math.max(
-                  0,
-                  Math.floor(
-                    parseNumber(
-                      reportPayload.duration_seconds,
-                      durationSeconds,
-                    ),
-                  ),
-                );
-                const winnerType = safeString(reportPayload.winner_type, "");
-                const winnerTeam = safeString(reportPayload.winner_team, "");
-                const winnerPeerIdRaw = reportPayload.winner_peer_id;
-                const winnerPeerId =
-                  typeof winnerPeerIdRaw === "number"
-                    ? winnerPeerIdRaw
-                    : typeof winnerPeerIdRaw === "string"
-                      ? Number.parseInt(winnerPeerIdRaw, 10)
-                      : NaN;
-                const winnerUserId = Number.isInteger(winnerPeerId)
-                  ? (room.clients.get(winnerPeerId)?.userId ?? null)
+          case "leave_room": {
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "left_room", { roomId: null, peerId: null });
+            }
+
+            const otherAuthenticatedSessions = session.userId
+              ? Array.from(clientSessions.values()).filter(
+                  (s) =>
+                    s.ws !== ws &&
+                    s.userId === session.userId &&
+                    s.isAuthenticated,
+                )
+              : [];
+
+            handleRoomDeparture(ws, session, otherAuthenticatedSessions, false);
+
+            if (session.userId) {
+              const lock = activeUserRoomLocks.get(session.userId);
+              if (lock && lock.ws === ws) {
+                const replacement = otherAuthenticatedSessions[0];
+                if (replacement && replacement.roomId) {
+                  activeUserRoomLocks.set(session.userId, {
+                    roomId: replacement.roomId,
+                    ws: replacement.ws,
+                  });
+                } else {
+                  activeUserRoomLocks.delete(session.userId);
+                }
+              }
+            }
+
+            send(ws, "left_room", { roomId: null, peerId: null });
+            break;
+          }
+
+          case "chat": {
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) return send(ws, "error", { reason: "room_not_found" });
+            const textRaw =
+              typeof (msg.data as any)?.text === "string"
+                ? (msg.data as any).text.slice(0, 500)
+                : "";
+            const text = textRaw.trim();
+            if (text.length === 0) {
+              return;
+            }
+
+            roomRepo.addRoomChatMessage({
+              roomId: room.id,
+              senderUserId: session.userId,
+              senderPeerId: session.peerId,
+              senderName: session.name,
+              message: text,
+            });
+
+            broadcast(room, "chat", {
+              from: session.peerId,
+              fromName: session.name,
+              text,
+            });
+            logInfo(
+              `chat: roomId=${room.id} peerId=${session.peerId} msg=${text.slice(
+                0,
+                50,
+              )}`,
+            );
+            break;
+          }
+
+          case "load_tbw": {
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) return send(ws, "error", { reason: "room_not_found" });
+            if (!room.clients.get(session.peerId)?.isHost) {
+              return send(ws, "error", { reason: "not_host" });
+            }
+            const lines = Array.isArray((msg.data as any)?.lines)
+              ? (msg.data as any).lines.slice(0, 200000)
+              : [];
+            roomManager.updateTbw(room.id, lines);
+            broadcast(room, "tbw", { lines });
+            logInfo(`tbw broadcast: roomId=${room.id} lines=${lines.length}`);
+            break;
+          }
+
+          case "player_snapshot": {
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) return send(ws, "error", { reason: "room_not_found" });
+            broadcast(
+              room,
+              "player_snapshot",
+              {
+                from: session.peerId,
+                payload: (msg.data as any)?.payload ?? {},
+              },
+              session.peerId,
+            );
+            break;
+          }
+
+          case "player_state": {
+            // Relay player state (position, rotation, velocity) to all other clients
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) return send(ws, "error", { reason: "room_not_found" });
+
+            const stateData = (msg.data as any) || {};
+            broadcast(
+              room,
+              "player_state",
+              {
+                peerId: session.peerId,
+                position: stateData.position || { x: 0, y: 0, z: 0 },
+                rotation: stateData.rotation || { x: 0, y: 0, z: 0 },
+                velocity: stateData.velocity || { x: 0, y: 0, z: 0 },
+                // Pass through animation and state so clients can fully sync visuals
+                state: stateData.state ?? 0,
+                anim: stateData.anim || {},
+              },
+              session.peerId,
+            );
+            break;
+          }
+
+          case "kick": {
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) return send(ws, "error", { reason: "room_not_found" });
+            if (!room.clients.get(session.peerId)?.isHost) {
+              return send(ws, "error", { reason: "not_host" });
+            }
+            const targetPeerId = (msg.data as any)?.peerId;
+            if (typeof targetPeerId !== "number") {
+              return send(ws, "error", { reason: "invalid_target" });
+            }
+            const targetSession = Array.from(clientSessions.values()).find(
+              (s) => s.roomId === room.id && s.peerId === targetPeerId,
+            );
+            if (targetSession) {
+              send(targetSession.ws, "kicked", { reason: "host_kick" });
+              cleanupClient(targetSession.ws);
+            }
+            logInfo(`kick: roomId=${room.id} target=${targetPeerId}`);
+            break;
+          }
+
+          case "ban": {
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) return send(ws, "error", { reason: "room_not_found" });
+            if (!room.clients.get(session.peerId)?.isHost) {
+              return send(ws, "error", { reason: "not_host" });
+            }
+            const targetIp = (msg.data as any)?.ip;
+            if (typeof targetIp !== "string") {
+              return send(ws, "error", { reason: "invalid_target" });
+            }
+            roomManager.banPlayer(room.id, targetIp);
+            logInfo(`ban: roomId=${room.id} ip=${targetIp}`);
+            break;
+          }
+
+          case "ping": {
+            send(ws, "pong", { ts: Date.now() });
+            break;
+          }
+
+          case "match_result": {
+            const identity = validateSessionIdentity(session);
+            if (!identity.ok || !session.accessToken) {
+              return send(ws, "error", {
+                reason: "authentication_required",
+                message:
+                  "Authenticated host session required for match reporting",
+              });
+            }
+
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) {
+              return send(ws, "error", { reason: "room_not_found" });
+            }
+
+            if (!room.clients.get(session.peerId)?.isHost) {
+              return send(ws, "error", {
+                reason: "not_host",
+                message: "Only room host can submit match results",
+              });
+            }
+
+            const payload = (msg.data as any) || {};
+            const gamemode =
+              typeof payload.gamemode === "string" &&
+              payload.gamemode.trim().length > 0
+                ? payload.gamemode.trim()
+                : "unknown";
+
+            const winnerRaw = payload.winner_user_id ?? payload.winnerUserId;
+            const winnerUserId =
+              typeof winnerRaw === "number"
+                ? winnerRaw
+                : typeof winnerRaw === "string"
+                  ? Number.parseInt(winnerRaw, 10)
                   : null;
 
-                const leaderboardRaw = Array.isArray(reportPayload.leaderboard)
-                  ? reportPayload.leaderboard
-                  : [];
-                logInfo(
-                  `gamemode_end report payload: roomId=${room.id} leaderboard_entries=${leaderboardRaw.length}`,
-                );
-                const players: LocalMatchPlayerReport[] = [];
-                for (const entry of leaderboardRaw) {
-                  if (!entry || typeof entry !== "object") {
-                    continue;
-                  }
-                  const payloadEntry = entry as Record<string, unknown>;
-                  const peerIdRaw = payloadEntry.peer_id;
-                  const peerId =
-                    typeof peerIdRaw === "number"
-                      ? peerIdRaw
-                      : typeof peerIdRaw === "string"
-                        ? Number.parseInt(peerIdRaw, 10)
-                        : NaN;
-                  if (!Number.isInteger(peerId)) {
-                    continue;
-                  }
-                  const member = room.clients.get(peerId);
-                  const userId = member?.userId ?? -1;
-                  if (!Number.isInteger(userId) || userId <= 0) {
-                    continue;
-                  }
-                  const payloadDisplayName = safeString(
-                    payloadEntry.display_name,
-                    "",
-                  );
-                  const payloadUsername = safeString(payloadEntry.username, "");
-                  const participantSession = Array.from(
-                    clientSessions.values(),
-                  ).find((s) => s.roomId === room.id && s.peerId === peerId);
-                  const sessionUsername =
-                    participantSession?.username?.trim() ?? "";
-                  const resolvedDisplayName =
-                    payloadDisplayName.trim().length > 0
-                      ? payloadDisplayName
-                      : (member?.name ?? "").trim();
-                  const resolvedUsername =
-                    payloadUsername.trim().length > 0
-                      ? payloadUsername
-                      : sessionUsername.length > 0
-                        ? sessionUsername
-                        : resolvedDisplayName;
-                  players.push({
-                    user_id: userId,
-                    username: resolvedUsername,
-                    display_name: resolvedDisplayName,
-                    team: safeString(payloadEntry.team, "Default"),
-                    kills: Math.max(
-                      0,
-                      Number.parseInt(String(payloadEntry.kills ?? 0), 10) || 0,
-                    ),
-                    deaths: Math.max(
-                      0,
-                      Number.parseInt(String(payloadEntry.deaths ?? 0), 10) ||
-                        0,
-                    ),
-                    score: Math.max(
-                      0,
-                      Number.parseInt(String(payloadEntry.score ?? 0), 10) ||
-                        Math.max(
-                          0,
-                          Number.parseInt(
-                            String(payloadEntry.kills ?? 0),
-                            10,
-                          ) || 0,
-                        ),
-                    ),
-                    playtime_seconds: Math.max(
-                      0,
-                      Number.parseInt(
-                        String(payloadEntry.playtime_seconds ?? 0),
-                        10,
-                      ) || durationFromPayload,
-                    ),
-                    won: Boolean(payloadEntry.won),
-                  });
+            const durationRaw =
+              payload.duration_seconds ?? payload.durationSeconds;
+            const durationSeconds =
+              typeof durationRaw === "number"
+                ? Math.max(0, Math.floor(durationRaw))
+                : typeof durationRaw === "string"
+                  ? Math.max(0, Number.parseInt(durationRaw, 10) || 0)
+                  : 0;
+
+            const sourcePlayers = Array.isArray(payload.players)
+              ? payload.players
+              : [];
+            const players: MatchPlayerReport[] = sourcePlayers
+              .map((entry: any) => {
+                const userIdRaw = entry?.user_id ?? entry?.userId;
+                const parsedUserId =
+                  typeof userIdRaw === "number"
+                    ? userIdRaw
+                    : typeof userIdRaw === "string"
+                      ? Number.parseInt(userIdRaw, 10)
+                      : NaN;
+
+                if (!Number.isInteger(parsedUserId) || parsedUserId <= 0) {
+                  return null;
                 }
 
-                logInfo(
-                  `gamemode_end mapped participants: roomId=${room.id} players_mapped=${players.length}`,
-                );
+                const kills =
+                  Number.parseInt(String(entry?.kills ?? 0), 10) || 0;
+                const deaths =
+                  Number.parseInt(String(entry?.deaths ?? 0), 10) || 0;
+                const playtimeSeconds =
+                  Number.parseInt(
+                    String(
+                      entry?.playtime_seconds ?? entry?.playtimeSeconds ?? 0,
+                    ),
+                    10,
+                  ) || 0;
 
-                if (players.length > 0) {
-                  const localMatchHistoryId = roomRepo.addRoomMatchHistory({
-                    roomId: room.id,
-                    gamemode,
-                    winnerUserId:
-                      winnerUserId &&
-                      Number.isInteger(winnerUserId) &&
-                      winnerUserId > 0
-                        ? winnerUserId
-                        : null,
-                    winnerType: winnerType.length > 0 ? winnerType : null,
-                    winnerTeam:
-                      winnerType === "team" && winnerTeam.length > 0
-                        ? winnerTeam
-                        : null,
-                    gameStartedAtMs: startedAtMs,
-                    gameEndedAtMs: endedAtMs,
-                    durationSeconds: durationFromPayload,
-                  });
-                  roomRepo.addRoomMatchParticipants(
-                    localMatchHistoryId,
-                    players,
+                return {
+                  user_id: parsedUserId,
+                  kills: Math.max(0, kills),
+                  deaths: Math.max(0, deaths),
+                  playtime_seconds: Math.max(0, playtimeSeconds),
+                  won: Boolean(entry?.won),
+                } satisfies MatchPlayerReport;
+              })
+              .filter(
+                (entry: MatchPlayerReport | null): entry is MatchPlayerReport =>
+                  entry !== null,
+              );
+
+            if (players.length === 0) {
+              return send(ws, "error", {
+                reason: "invalid_match_result",
+                message:
+                  "players array must include at least one valid user_id",
+              });
+            }
+
+            const localMatchHistoryId = roomRepo.addRoomMatchHistory({
+              roomId: session.roomId,
+              gamemode,
+              winnerUserId:
+                winnerUserId &&
+                Number.isInteger(winnerUserId) &&
+                winnerUserId > 0
+                  ? winnerUserId
+                  : null,
+              durationSeconds,
+            });
+            roomRepo.addRoomMatchParticipants(localMatchHistoryId, players);
+
+            reportMatchToDjango(session.accessToken, {
+              room_id: session.roomId,
+              gamemode,
+              winner_user_id:
+                winnerUserId &&
+                Number.isInteger(winnerUserId) &&
+                winnerUserId > 0
+                  ? winnerUserId
+                  : null,
+              duration_seconds: durationSeconds,
+              players,
+            })
+              .then((result) => {
+                roomRepo.markRoomMatchHistoryTransferred(
+                  localMatchHistoryId,
+                  typeof result.match_id === "number" ? result.match_id : null,
+                );
+                send(ws, "match_result_saved", {
+                  roomId: session.roomId,
+                  matchId: result.match_id ?? null,
+                  processedPlayers: result.processed_players ?? players.length,
+                });
+                logInfo(
+                  `match_result persisted: roomId=${session.roomId} matchId=${result.match_id ?? "n/a"} players=${players.length}`,
+                );
+              })
+              .catch((err: unknown) => {
+                const errorMessage =
+                  err instanceof Error ? err.message : String(err);
+                roomRepo.markRoomMatchHistoryTransferFailed(
+                  localMatchHistoryId,
+                  errorMessage,
+                );
+                logWarning(
+                  `match_result persistence failed for roomId=${session.roomId}: ${errorMessage}`,
+                );
+                send(ws, "match_result_error", {
+                  roomId: session.roomId,
+                  message: "Failed to persist match result",
+                });
+              });
+
+            break;
+          }
+
+          case "rpc_call": {
+            // Handle RPC calls - relay to target peer(s)
+            if (!session.roomId || session.peerId === null) {
+              return send(ws, "error", { reason: "not_in_room" });
+            }
+            const room = roomManager.getRoom(session.roomId);
+            if (!room) return send(ws, "error", { reason: "room_not_found" });
+
+            const targetPeer = (msg.data as any)?.targetPeer || 0;
+            const method = (msg.data as any)?.method || "";
+            const argsRaw = (msg.data as any)?.args;
+            const args: unknown[] = Array.isArray(argsRaw) ? argsRaw : [];
+            let forwardedArgs: unknown[] = args;
+            let shouldRelay = true;
+
+            const sender = room.clients.get(session.peerId);
+            const senderIsHost = Boolean(sender?.isHost);
+            if (method === "remote_start_gamemode" && senderIsHost) {
+              const idxRaw = Array.isArray(args) ? args[0] : undefined;
+              const paramsRaw = Array.isArray(args) ? args[1] : [];
+              const modsRaw = Array.isArray(args) ? args[2] : [];
+              const startedRaw = Array.isArray(args) ? args[3] : 0;
+              const labelRaw = Array.isArray(args) ? args[4] : undefined;
+              const idx =
+                typeof idxRaw === "number"
+                  ? Math.max(0, Math.floor(idxRaw))
+                  : Number.parseInt(String(idxRaw ?? 0), 10) || 0;
+              const startedAtMs =
+                typeof startedRaw === "number"
+                  ? Math.max(0, Math.floor(startedRaw))
+                  : Number.parseInt(String(startedRaw ?? 0), 10) || Date.now();
+              roomManager.setActiveGamemode(
+                room.id,
+                idx,
+                Array.isArray(paramsRaw) ? paramsRaw : [],
+                Array.isArray(modsRaw) ? modsRaw : [],
+                startedAtMs,
+              );
+              roomRepo.setActiveGamemodeState(
+                room.id,
+                idx,
+                Array.isArray(paramsRaw) ? paramsRaw : [],
+                Array.isArray(modsRaw) ? modsRaw : [],
+                startedAtMs,
+                totalGamemodeSecondsFromParams(
+                  Array.isArray(paramsRaw) ? paramsRaw : [],
+                ),
+                true,
+              );
+              const serverNowMs = Date.now();
+              const normalizedParams = Array.isArray(paramsRaw)
+                ? paramsRaw
+                : [];
+              const normalizedMods = Array.isArray(modsRaw) ? modsRaw : [];
+              const totalSecs =
+                totalGamemodeSecondsFromParams(normalizedParams);
+              const remainingSecs = calculateRemainingSecsAt(
+                startedAtMs,
+                normalizedParams,
+                serverNowMs,
+              );
+              forwardedArgs = [
+                idx,
+                normalizedParams,
+                normalizedMods,
+                startedAtMs,
+                remainingSecs,
+                serverNowMs,
+                totalSecs,
+              ];
+              if (typeof labelRaw === "string" && labelRaw.trim().length > 0) {
+                roomTimerLabels.set(room.id, labelRaw);
+              }
+            } else if (method === "remote_end_gamemode" && senderIsHost) {
+              const active = room.activeGamemode;
+              const reportPayloadRaw =
+                Array.isArray(args) && args.length > 0 ? args[0] : null;
+              const reportPayload =
+                reportPayloadRaw && typeof reportPayloadRaw === "object"
+                  ? (reportPayloadRaw as Record<string, unknown>)
+                  : null;
+              logInfo(
+                `gamemode_end received: roomId=${room.id} hasReport=${reportPayload !== null}`,
+              );
+              if (active !== null) {
+                const startedAtMs = toSafeMs(active.startedAtMs);
+                const endedAtMs = Date.now();
+                const durationSeconds = Math.max(
+                  0,
+                  Math.floor((endedAtMs - startedAtMs) / 1000),
+                );
+                roomRepo.addRoomGamemodeHistory({
+                  roomId: room.id,
+                  gamemodeIndex: active.index,
+                  params: Array.isArray(active.params) ? active.params : [],
+                  mods: Array.isArray(active.mods) ? active.mods : [],
+                  timerSeconds: totalGamemodeSecondsFromParams(
+                    Array.isArray(active.params) ? active.params : [],
+                  ),
+                  startedAtMs,
+                  endedAtMs,
+                  durationSeconds,
+                });
+
+                if (reportPayload) {
+                  const gamemode = safeString(
+                    reportPayload.gamemode,
+                    roomRepo.getRoomById(room.id)?.gamemode || "unknown",
+                  );
+                  const durationFromPayload = Math.max(
+                    0,
+                    Math.floor(
+                      parseNumber(
+                        reportPayload.duration_seconds,
+                        durationSeconds,
+                      ),
+                    ),
+                  );
+                  const winnerType = safeString(reportPayload.winner_type, "");
+                  const winnerTeam = safeString(reportPayload.winner_team, "");
+                  const winnerPeerIdRaw = reportPayload.winner_peer_id;
+                  const winnerPeerId =
+                    typeof winnerPeerIdRaw === "number"
+                      ? winnerPeerIdRaw
+                      : typeof winnerPeerIdRaw === "string"
+                        ? Number.parseInt(winnerPeerIdRaw, 10)
+                        : NaN;
+                  const winnerUserId = Number.isInteger(winnerPeerId)
+                    ? (room.clients.get(winnerPeerId)?.userId ?? null)
+                    : null;
+
+                  const leaderboardRaw = Array.isArray(
+                    reportPayload.leaderboard,
+                  )
+                    ? reportPayload.leaderboard
+                    : [];
+                  logInfo(
+                    `gamemode_end report payload: roomId=${room.id} leaderboard_entries=${leaderboardRaw.length}`,
+                  );
+                  const players: LocalMatchPlayerReport[] = [];
+                  for (const entry of leaderboardRaw) {
+                    if (!entry || typeof entry !== "object") {
+                      continue;
+                    }
+                    const payloadEntry = entry as Record<string, unknown>;
+                    const peerIdRaw = payloadEntry.peer_id;
+                    const peerId =
+                      typeof peerIdRaw === "number"
+                        ? peerIdRaw
+                        : typeof peerIdRaw === "string"
+                          ? Number.parseInt(peerIdRaw, 10)
+                          : NaN;
+                    if (!Number.isInteger(peerId)) {
+                      continue;
+                    }
+                    const member = room.clients.get(peerId);
+                    const userId = member?.userId ?? -1;
+                    if (!Number.isInteger(userId) || userId <= 0) {
+                      continue;
+                    }
+                    const payloadDisplayName = safeString(
+                      payloadEntry.display_name,
+                      "",
+                    );
+                    const payloadUsername = safeString(
+                      payloadEntry.username,
+                      "",
+                    );
+                    const participantSession = Array.from(
+                      clientSessions.values(),
+                    ).find((s) => s.roomId === room.id && s.peerId === peerId);
+                    const sessionUsername =
+                      participantSession?.username?.trim() ?? "";
+                    const resolvedDisplayName =
+                      payloadDisplayName.trim().length > 0
+                        ? payloadDisplayName
+                        : (member?.name ?? "").trim();
+                    const resolvedUsername =
+                      payloadUsername.trim().length > 0
+                        ? payloadUsername
+                        : sessionUsername.length > 0
+                          ? sessionUsername
+                          : resolvedDisplayName;
+                    players.push({
+                      user_id: userId,
+                      username: resolvedUsername,
+                      display_name: resolvedDisplayName,
+                      team: safeString(payloadEntry.team, "Default"),
+                      kills: Math.max(
+                        0,
+                        Number.parseInt(String(payloadEntry.kills ?? 0), 10) ||
+                          0,
+                      ),
+                      deaths: Math.max(
+                        0,
+                        Number.parseInt(String(payloadEntry.deaths ?? 0), 10) ||
+                          0,
+                      ),
+                      score: Math.max(
+                        0,
+                        Number.parseInt(String(payloadEntry.score ?? 0), 10) ||
+                          Math.max(
+                            0,
+                            Number.parseInt(
+                              String(payloadEntry.kills ?? 0),
+                              10,
+                            ) || 0,
+                          ),
+                      ),
+                      playtime_seconds: Math.max(
+                        0,
+                        Number.parseInt(
+                          String(payloadEntry.playtime_seconds ?? 0),
+                          10,
+                        ) || durationFromPayload,
+                      ),
+                      won: Boolean(payloadEntry.won),
+                    });
+                  }
+
+                  logInfo(
+                    `gamemode_end mapped participants: roomId=${room.id} players_mapped=${players.length}`,
                   );
 
-                  const transferToken =
-                    session.accessToken ?? findAccessTokenForRoom(room.id);
-                  if (transferToken) {
-                    logInfo(
-                      `gamemode_end transferring to django: roomId=${room.id} players=${players.length}`,
-                    );
-                    void reportMatchToDjango(transferToken, {
-                      room_id: room.id,
+                  if (players.length > 0) {
+                    const localMatchHistoryId = roomRepo.addRoomMatchHistory({
+                      roomId: room.id,
                       gamemode,
-                      winner_user_id:
+                      winnerUserId:
                         winnerUserId &&
                         Number.isInteger(winnerUserId) &&
                         winnerUserId > 0
                           ? winnerUserId
                           : null,
-                      duration_seconds: durationFromPayload,
+                      winnerType: winnerType.length > 0 ? winnerType : null,
+                      winnerTeam:
+                        winnerType === "team" && winnerTeam.length > 0
+                          ? winnerTeam
+                          : null,
+                      gameStartedAtMs: startedAtMs,
+                      gameEndedAtMs: endedAtMs,
+                      durationSeconds: durationFromPayload,
+                    });
+                    roomRepo.addRoomMatchParticipants(
+                      localMatchHistoryId,
                       players,
-                    })
-                      .then((result) => {
-                        roomRepo.markRoomMatchHistoryTransferred(
-                          localMatchHistoryId,
-                          typeof result.match_id === "number"
-                            ? result.match_id
+                    );
+
+                    const transferToken =
+                      session.accessToken ?? findAccessTokenForRoom(room.id);
+                    if (transferToken) {
+                      logInfo(
+                        `gamemode_end transferring to django: roomId=${room.id} players=${players.length}`,
+                      );
+                      void reportMatchToDjango(transferToken, {
+                        room_id: room.id,
+                        gamemode,
+                        winner_user_id:
+                          winnerUserId &&
+                          Number.isInteger(winnerUserId) &&
+                          winnerUserId > 0
+                            ? winnerUserId
                             : null,
-                        );
-                        logInfo(
-                          `gamemode_end match_result persisted: roomId=${room.id} matchId=${result.match_id ?? "n/a"} players=${players.length}`,
-                        );
+                        duration_seconds: durationFromPayload,
+                        players,
                       })
-                      .catch((error: unknown) => {
-                        const errorMessage =
-                          error instanceof Error
-                            ? error.message
-                            : String(error);
-                        roomRepo.markRoomMatchHistoryTransferFailed(
-                          localMatchHistoryId,
-                          errorMessage,
-                        );
-                        logWarning(
-                          `gamemode_end match_result transfer failed for roomId=${room.id}: ${errorMessage}`,
-                        );
-                      });
+                        .then((result) => {
+                          roomRepo.markRoomMatchHistoryTransferred(
+                            localMatchHistoryId,
+                            typeof result.match_id === "number"
+                              ? result.match_id
+                              : null,
+                          );
+                          logInfo(
+                            `gamemode_end match_result persisted: roomId=${room.id} matchId=${result.match_id ?? "n/a"} players=${players.length}`,
+                          );
+                        })
+                        .catch((error: unknown) => {
+                          const errorMessage =
+                            error instanceof Error
+                              ? error.message
+                              : String(error);
+                          roomRepo.markRoomMatchHistoryTransferFailed(
+                            localMatchHistoryId,
+                            errorMessage,
+                          );
+                          logWarning(
+                            `gamemode_end match_result transfer failed for roomId=${room.id}: ${errorMessage}`,
+                          );
+                        });
+                    } else {
+                      logWarning(
+                        `gamemode_end transfer skipped: roomId=${room.id} no transfer token`,
+                      );
+                      roomRepo.markRoomMatchHistoryTransferFailed(
+                        localMatchHistoryId,
+                        "No authenticated access token available for Django transfer",
+                      );
+                    }
                   } else {
                     logWarning(
-                      `gamemode_end transfer skipped: roomId=${room.id} no transfer token`,
-                    );
-                    roomRepo.markRoomMatchHistoryTransferFailed(
-                      localMatchHistoryId,
-                      "No authenticated access token available for Django transfer",
+                      `gamemode_end report ignored: roomId=${room.id} no mappable players in payload`,
                     );
                   }
-                } else {
-                  logWarning(
-                    `gamemode_end report ignored: roomId=${room.id} no mappable players in payload`,
-                  );
                 }
               }
-            }
-            roomManager.clearActiveGamemode(room.id);
-            roomRepo.clearActiveGamemodeState(room.id);
-            roomTimerLabels.delete(room.id);
-            forwardedArgs = [];
-          } else if (method === "remote_gamemode_timer_sync" && senderIsHost) {
-            const label = String(args[0] ?? "Gamemode");
-            if (label.trim().length > 0) {
-              roomTimerLabels.set(room.id, label);
-            }
-            let authoritativeRemaining: number | null = null;
-            let authoritativeMax: number | null = null;
+              roomManager.clearActiveGamemode(room.id);
+              roomRepo.clearActiveGamemodeState(room.id);
+              roomTimerLabels.delete(room.id);
+              forwardedArgs = [];
+            } else if (
+              method === "remote_gamemode_timer_sync" &&
+              senderIsHost
+            ) {
+              const label = String(args[0] ?? "Gamemode");
+              if (label.trim().length > 0) {
+                roomTimerLabels.set(room.id, label);
+              }
+              let authoritativeRemaining: number | null = null;
+              let authoritativeMax: number | null = null;
 
-            const dbRoom = roomRepo.getRoomById(room.id);
-            const dbActive = parseDbActiveGamemode(dbRoom);
-            if (dbActive !== null) {
-              authoritativeRemaining = calculateRemainingSecs(
-                dbActive.startedAtMs,
-                dbActive.params,
+              const dbRoom = roomRepo.getRoomById(room.id);
+              const dbActive = parseDbActiveGamemode(dbRoom);
+              if (dbActive !== null) {
+                authoritativeRemaining = calculateRemainingSecs(
+                  dbActive.startedAtMs,
+                  dbActive.params,
+                );
+                authoritativeMax = totalGamemodeSecondsFromParams(
+                  dbActive.params,
+                );
+              } else if (room.activeGamemode !== null) {
+                authoritativeRemaining = calculateRemainingSecs(
+                  room.activeGamemode.startedAtMs,
+                  Array.isArray(room.activeGamemode.params)
+                    ? room.activeGamemode.params
+                    : [],
+                );
+                authoritativeMax = totalGamemodeSecondsFromParams(
+                  Array.isArray(room.activeGamemode.params)
+                    ? room.activeGamemode.params
+                    : [],
+                );
+              }
+
+              if (
+                authoritativeRemaining !== null &&
+                authoritativeMax !== null
+              ) {
+                forwardedArgs = [
+                  label,
+                  authoritativeRemaining,
+                  authoritativeMax,
+                ];
+              }
+              // DB timer loop is the single source of countdown broadcasts.
+              shouldRelay = false;
+            } else if (method === "remote_gamemode_menu_sync" && senderIsHost) {
+              const idxRaw = Array.isArray(args) ? args[0] : undefined;
+              const paramsRaw = Array.isArray(args) ? args[1] : [];
+              const modsRaw = Array.isArray(args) ? args[2] : [];
+              const idx =
+                typeof idxRaw === "number"
+                  ? Math.max(0, Math.floor(idxRaw))
+                  : Number.parseInt(String(idxRaw ?? 0), 10) || 0;
+              roomRepo.setSelectedGamemodeState(
+                room.id,
+                idx,
+                Array.isArray(paramsRaw) ? paramsRaw : [],
+                Array.isArray(modsRaw) ? modsRaw : [],
               );
-              authoritativeMax = totalGamemodeSecondsFromParams(
-                dbActive.params,
-              );
-            } else if (room.activeGamemode !== null) {
-              authoritativeRemaining = calculateRemainingSecs(
-                room.activeGamemode.startedAtMs,
-                Array.isArray(room.activeGamemode.params)
-                  ? room.activeGamemode.params
-                  : [],
-              );
-              authoritativeMax = totalGamemodeSecondsFromParams(
-                Array.isArray(room.activeGamemode.params)
-                  ? room.activeGamemode.params
-                  : [],
-              );
             }
 
-            if (authoritativeRemaining !== null && authoritativeMax !== null) {
-              forwardedArgs = [label, authoritativeRemaining, authoritativeMax];
-            }
-            // DB timer loop is the single source of countdown broadcasts.
-            shouldRelay = false;
-          } else if (method === "remote_gamemode_menu_sync" && senderIsHost) {
-            const idxRaw = Array.isArray(args) ? args[0] : undefined;
-            const paramsRaw = Array.isArray(args) ? args[1] : [];
-            const modsRaw = Array.isArray(args) ? args[2] : [];
-            const idx =
-              typeof idxRaw === "number"
-                ? Math.max(0, Math.floor(idxRaw))
-                : Number.parseInt(String(idxRaw ?? 0), 10) || 0;
-            roomRepo.setSelectedGamemodeState(
-              room.id,
-              idx,
-              Array.isArray(paramsRaw) ? paramsRaw : [],
-              Array.isArray(modsRaw) ? modsRaw : [],
-            );
-          }
-
-          if (
-            method === "remote_tool_active" ||
-            method === "remote_fire_visual"
-          ) {
-            logInfo(
-              `[WS] 🔧 rpc_call ${method} from peer ${session.peerId} to ${targetPeer === 0 ? "ALL" : targetPeer}, args: ${JSON.stringify(args)}`,
-            );
-          }
-
-          if (!shouldRelay) {
-            break;
-          }
-
-          if (targetPeer === 0) {
-            const rpcData = {
-              fromPeer: session.peerId,
-              method,
-              args: forwardedArgs,
-            };
-            // Broadcast to all peers in room
-            const recipientCount = room.clients.size - 1; // exclude sender
             if (
               method === "remote_tool_active" ||
               method === "remote_fire_visual"
             ) {
               logInfo(
-                `[WS] 📢 Broadcasting ${method} to ${recipientCount} peers (excluding ${session.peerId})`,
+                `[WS] 🔧 rpc_call ${method} from peer ${session.peerId} to ${targetPeer === 0 ? "ALL" : targetPeer}, args: ${JSON.stringify(args)}`,
               );
             }
-            broadcast(room, "rpc_call", rpcData, session.peerId);
-          } else {
-            const rpcData = {
-              fromPeer: session.peerId,
-              method,
-              args: forwardedArgs,
-            };
-            // Send to specific peer
-            const targetSession = Array.from(clientSessions.values()).find(
-              (s) => s.roomId === room.id && s.peerId === targetPeer,
-            );
-            if (targetSession) {
-              send(targetSession.ws, "rpc_call", rpcData);
-            }
-          }
-          break;
-        }
 
-        default:
-          send(ws, "error", { reason: "unknown_type" });
+            if (!shouldRelay) {
+              break;
+            }
+
+            if (targetPeer === 0) {
+              const rpcData = {
+                fromPeer: session.peerId,
+                method,
+                args: forwardedArgs,
+              };
+              // Broadcast to all peers in room
+              const recipientCount = room.clients.size - 1; // exclude sender
+              if (
+                method === "remote_tool_active" ||
+                method === "remote_fire_visual"
+              ) {
+                logInfo(
+                  `[WS] 📢 Broadcasting ${method} to ${recipientCount} peers (excluding ${session.peerId})`,
+                );
+              }
+              broadcast(room, "rpc_call", rpcData, session.peerId);
+            } else {
+              const rpcData = {
+                fromPeer: session.peerId,
+                method,
+                args: forwardedArgs,
+              };
+              // Send to specific peer
+              const targetSession = Array.from(clientSessions.values()).find(
+                (s) => s.roomId === room.id && s.peerId === targetPeer,
+              );
+              if (targetSession) {
+                send(targetSession.ws, "rpc_call", rpcData);
+              }
+            }
+            break;
+          }
+
+          default:
+            send(ws, "error", { reason: "unknown_type" });
+        }
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        logError(
+          `ws message handling failed: type=${msg.type} roomId=${session.roomId ?? "n/a"} peerId=${session.peerId ?? "n/a"} error=${errorMessage}`,
+        );
+        send(ws, "error", {
+          reason: "internal_server_error",
+          message: "Server failed to process message",
+        });
       }
     });
 
