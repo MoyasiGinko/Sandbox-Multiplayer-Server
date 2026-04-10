@@ -57,10 +57,39 @@ const activeUserRoomLocks = new Map<
 >();
 const ROOM_TIMER_SYNC_INTERVAL_MS = 1_000;
 const MATCH_TRANSFER_RETRY_INTERVAL_MS = 10_000;
+const ROOM_SESSION_ENFORCEMENT_INTERVAL_MS = 2_000;
 let _matchTransferRetryLoopStarted = false;
 let _matchTransferRetryInProgress = false;
 let _roomTimerSyncLoopStarted = false;
+let _roomSessionEnforcementLoopStarted = false;
 const roomTimerLabels = new Map<string, string>();
+
+function enforceActiveRoomSessions(): void {
+  const sessions = Array.from(clientSessions.values());
+  for (const session of sessions) {
+    if (!session.roomId || session.peerId === null) {
+      continue;
+    }
+
+    const dbRoom = roomRepo.getRoomById(session.roomId);
+    if (!dbRoom) {
+      send(session.ws, "kicked", {
+        reason: "room_removed",
+        message: "Room was removed. You have been disconnected.",
+      });
+      cleanupClient(session.ws);
+      continue;
+    }
+
+    if (!dbRoom.is_active) {
+      send(session.ws, "kicked", {
+        reason: "room_inactive",
+        message: "Room became inactive. You have been disconnected.",
+      });
+      cleanupClient(session.ws);
+    }
+  }
+}
 
 function broadcastDbAuthoritativeTimerTicks(): void {
   const nowMs = Date.now();
@@ -601,6 +630,13 @@ export function setupWebSocket(server: http.Server) {
     setInterval(() => {
       broadcastDbAuthoritativeTimerTicks();
     }, ROOM_TIMER_SYNC_INTERVAL_MS);
+  }
+
+  if (!_roomSessionEnforcementLoopStarted) {
+    _roomSessionEnforcementLoopStarted = true;
+    setInterval(() => {
+      enforceActiveRoomSessions();
+    }, ROOM_SESSION_ENFORCEMENT_INTERVAL_MS);
   }
 
   wss.on("connection", (ws: WebSocket) => {
